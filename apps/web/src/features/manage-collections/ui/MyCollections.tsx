@@ -1,4 +1,5 @@
-import { useState, type SubmitEvent } from 'react';
+import { useEffect, useState, type SubmitEvent } from 'react';
+import { toast } from 'sonner';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   deleteCollection,
@@ -9,7 +10,7 @@ import {
 import { apiError, useApi } from '../../../shared/api/client';
 import { Button } from '../../../shared/ui/button';
 import { Input } from '../../../shared/ui/input';
-import { CollectionIcon, MoreIcon } from '../../../shared/ui/icons';
+import { CollectionIcon, MoreIcon, LoadingIcon } from '../../../shared/ui/icons';
 import { Dialog, DialogDescription, DialogTitle } from '../../../shared/ui/dialog';
 import {
   DialogBody,
@@ -39,6 +40,10 @@ export function MyCollections({
   const api = useApi();
   const cache = useQueryClient();
   const collections = useCollections(userId, true);
+  useEffect(() => {
+    if (collections.error)
+      toast.error(apiError(collections.error), { id: `collections-list-${userId}` });
+  }, [collections.error, collections.errorUpdatedAt, userId]);
   const [action, setAction] = useState<{
     collection: Collection;
     kind: 'rename' | 'delete';
@@ -50,7 +55,13 @@ export function MyCollections({
       if (action.kind === 'delete') await deleteCollection(api, action.collection.id);
       else await renameCollection(api, action.collection.id, name);
     },
+    onError: (error) => toast.error(apiError(error)),
     onSuccess: async () => {
+      toast.success(
+        action?.kind === 'delete'
+          ? `Deleted “${action.collection.name}”.`
+          : `Renamed to “${name.trim()}”.`,
+      );
       if (action?.kind === 'delete') onDeleted(action.collection.id);
       setAction(null);
       await cache.invalidateQueries({ queryKey: ['collections', userId] });
@@ -100,11 +111,6 @@ export function MyCollections({
                   />
                 </label>
               )}
-              {mutation.isError && (
-                <p role="alert" className="pt-3 text-xs text-destructive">
-                  {apiError(mutation.error)}
-                </p>
-              )}
             </DialogBody>
             <DialogPanelFooter>
               <Button
@@ -120,7 +126,8 @@ export function MyCollections({
                 variant={action.kind === 'delete' ? 'destructive' : 'default'}
                 disabled={mutation.isPending || (action.kind === 'rename' && !name.trim())}
               >
-                {mutation.isPending ? 'Saving…' : action.kind === 'delete' ? 'Delete' : 'Save'}
+                {mutation.isPending && <LoadingIcon className="animate-spin" aria-hidden="true" />}
+                {action.kind === 'delete' ? 'Delete' : 'Save'}
               </Button>
             </DialogPanelFooter>
           </form>
@@ -129,9 +136,11 @@ export function MyCollections({
             <DialogBody className="space-y-5 pb-6">
               <div>
                 {collections.isPending && (
-                  <p role="status" className="py-4 text-sm text-muted-foreground">
-                    Loading collections…
-                  </p>
+                  <LoadingIcon
+                    role="status"
+                    aria-label="Loading collections"
+                    className="mx-auto my-4 size-5 animate-spin text-muted-foreground"
+                  />
                 )}
                 {collections.isSuccess && !items.length && (
                   <p className="py-4 text-sm text-muted-foreground">
@@ -191,8 +200,7 @@ export function MyCollections({
                   </Button>
                 )}
                 {collections.isError && (
-                  <div role="alert" className="space-y-2 py-3 text-sm">
-                    <p>{apiError(collections.error)}</p>
+                  <div className="py-3">
                     <Button
                       variant="secondary"
                       onClick={() =>

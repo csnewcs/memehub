@@ -1,4 +1,5 @@
 import { useState, type SubmitEvent } from 'react';
+import { toast } from 'sonner';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { createCollection, type Collection } from '../../../entities/collection';
 import { apiError, useApi } from '../../../shared/api/client';
@@ -14,7 +15,7 @@ export function CollectionForm({
 }: {
   userId: string;
   memeId?: string;
-  onCreated: (collection: Collection) => void;
+  onCreated?: (collection: Collection) => void;
   disabled?: boolean;
 }) {
   const api = useApi();
@@ -22,10 +23,12 @@ export function CollectionForm({
   const [name, setName] = useState('');
   const create = useMutation({
     mutationFn: () => createCollection(api, name, memeId),
+    onError: (error) => toast.error(apiError(error)),
     onSuccess: async (collection) => {
       setName('');
+      toast.success(memeId ? `Saved to “${collection.name}”.` : `Created “${collection.name}”.`);
       await cache.invalidateQueries({ queryKey: ['collections', userId] });
-      onCreated(collection);
+      onCreated?.(collection);
     },
   });
   function submit(event: SubmitEvent<HTMLFormElement>) {
@@ -64,11 +67,6 @@ export function CollectionForm({
           )}
         </Button>
       </div>
-      {create.isError && (
-        <p role="alert" className="text-xs text-destructive">
-          {apiError(create.error)}
-        </p>
-      )}
     </form>
   );
 }

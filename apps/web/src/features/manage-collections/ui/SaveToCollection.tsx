@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect } from 'react';
+import { toast } from 'sonner';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getSession } from '../../../entities/session';
 import { setCollectionMeme, useCollections, type Collection } from '../../../entities/collection';
@@ -15,13 +16,19 @@ export function SaveToCollection({ memeId, onClose }: { memeId: string; onClose:
   const session = useQuery({ queryKey: ['session'], queryFn: () => getSession(api) });
   const userId = session.data?.id || '';
   const collections = useCollections(userId, true, memeId);
-  const [message, setMessage] = useState('');
+  useEffect(() => {
+    if (session.error) toast.error(apiError(session.error), { id: 'collections-session-error' });
+  }, [session.error, session.errorUpdatedAt]);
+  useEffect(() => {
+    if (collections.error)
+      toast.error(apiError(collections.error), { id: `collections-list-${userId}-${memeId}` });
+  }, [collections.error, collections.errorUpdatedAt, userId, memeId]);
   const change = useMutation({
     mutationFn: (collection: Collection) =>
       setCollectionMeme(api, collection.id, memeId, !collection.contains_meme),
-    onMutate: () => setMessage(''),
+    onError: (error) => toast.error(apiError(error)),
     onSuccess: async (_, collection) => {
-      setMessage(
+      toast.success(
         collection.contains_meme
           ? `Removed from “${collection.name}”.`
           : `Saved to “${collection.name}”.`,
@@ -49,17 +56,16 @@ export function SaveToCollection({ memeId, onClose }: { memeId: string; onClose:
         </DialogPanelHeader>
         <DialogBody className="space-y-5 pb-6">
           {session.isPending && (
-            <p role="status" className="text-sm text-muted-foreground">
-              Loading account…
-            </p>
+            <LoadingIcon
+              role="status"
+              aria-label="Loading account"
+              className="mx-auto my-4 size-5 animate-spin text-muted-foreground"
+            />
           )}
           {session.isError && (
-            <div role="alert" className="space-y-2 text-sm">
-              <p>{apiError(session.error)}</p>
-              <Button variant="secondary" onClick={() => void session.refetch()}>
-                Try again
-              </Button>
-            </div>
+            <Button variant="secondary" onClick={() => void session.refetch()}>
+              Try again
+            </Button>
           )}
           {session.isSuccess && !session.data && (
             <div className="space-y-4 pb-2">
@@ -85,9 +91,11 @@ export function SaveToCollection({ memeId, onClose }: { memeId: string; onClose:
             <>
               <div>
                 {collections.isPending && (
-                  <p role="status" className="py-4 text-sm text-muted-foreground">
-                    Loading collections…
-                  </p>
+                  <LoadingIcon
+                    role="status"
+                    aria-label="Loading collections"
+                    className="mx-auto my-4 size-5 animate-spin text-muted-foreground"
+                  />
                 )}
                 {collections.isSuccess && !items.length && (
                   <div className="space-y-2 py-4 text-center text-muted-foreground">
@@ -133,8 +141,7 @@ export function SaveToCollection({ memeId, onClose }: { memeId: string; onClose:
                   </Button>
                 )}
                 {collections.isError && (
-                  <div role="alert" className="space-y-2 py-3 text-sm">
-                    <p>{apiError(collections.error)}</p>
+                  <div className="py-3">
                     <Button
                       variant="secondary"
                       onClick={() =>
@@ -147,21 +154,8 @@ export function SaveToCollection({ memeId, onClose }: { memeId: string; onClose:
                     </Button>
                   </div>
                 )}
-                {change.isError && (
-                  <p role="alert" className="pt-2 text-xs text-destructive">
-                    {apiError(change.error)}
-                  </p>
-                )}
               </div>
-              <CollectionForm
-                userId={userId}
-                memeId={memeId}
-                disabled={change.isPending}
-                onCreated={(collection) => setMessage(`Saved to “${collection.name}”.`)}
-              />
-              <p role="status" className="text-xs text-muted-foreground">
-                {message}
-              </p>
+              <CollectionForm userId={userId} memeId={memeId} disabled={change.isPending} />
             </>
           )}
         </DialogBody>

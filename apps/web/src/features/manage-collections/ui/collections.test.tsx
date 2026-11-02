@@ -3,6 +3,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
+import { toast } from 'sonner';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { ApiContext, createApi } from '../../../shared/api/client';
 import { MemeCard, type Meme } from '../../../entities/meme';
@@ -10,6 +11,7 @@ import type { Collection } from '../../../entities/collection';
 import { SaveToCollection } from './SaveToCollection';
 import { MemeLibrary } from '../../../widgets/meme-library';
 import { desktopHover } from '../../../shared/lib/desktop-hover';
+import { Toaster } from '../../../shared/ui/sonner';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
@@ -32,7 +34,10 @@ function mockDesktop(desktop: boolean) {
 beforeEach(() => mockDesktop(false));
 
 afterEach(async () => {
-  await act(async () => root?.unmount());
+  await act(async () => {
+    toast.dismiss();
+    root?.unmount();
+  });
   client?.clear();
   document.body.innerHTML = '';
   window.history.replaceState(null, '', '/');
@@ -51,7 +56,10 @@ async function render(element: React.ReactNode, api: ReturnType<typeof createApi
   await act(async () =>
     root!.render(
       <ApiContext.Provider value={api}>
-        <QueryClientProvider client={client}>{element}</QueryClientProvider>
+        <QueryClientProvider client={client}>
+          {element}
+          <Toaster />
+        </QueryClientProvider>
       </ApiContext.Provider>,
     ),
   );
@@ -118,7 +126,20 @@ describe('collection interactions', () => {
     await until(() => !!document.querySelector('[aria-label="Add to Favorites"]'));
     await click(document.querySelector('[aria-label="Add to Favorites"]'));
     await until(() => !!document.querySelector('[aria-label="Remove from Favorites"]'));
+    await until(
+      () =>
+        document
+          .querySelector('[data-sonner-toast][data-type="success"]')
+          ?.textContent?.includes('Saved to “Favorites”.') === true,
+    );
+    expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain(
+      'Saved to “Favorites”.',
+    );
     await click(document.querySelector('[role="dialog"] [data-slot="dialog-close"]'));
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector('[data-sonner-toast]')?.textContent).toContain(
+      'Saved to “Favorites”.',
+    );
     await act(async () => {
       document
         .querySelector('[aria-label="Account menu"]')!
@@ -307,7 +328,14 @@ describe('collection interactions', () => {
     expect(
       document.querySelector('[aria-label="Add to 고양이 모음"]')?.getAttribute('aria-pressed'),
     ).toBe('false');
-    expect(document.body.textContent).toContain('Removed from “고양이 모음”.');
+    await until(() =>
+      Array.from(document.querySelectorAll('[data-sonner-toast][data-type="success"]')).some(
+        (toast) => toast.textContent?.includes('Removed from “고양이 모음”.'),
+      ),
+    );
+    expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain(
+      'Removed from “고양이 모음”.',
+    );
     expect(
       Array.from(document.querySelectorAll('button')).some(
         (button) => button.textContent === 'Done',
@@ -362,14 +390,16 @@ describe('collection interactions', () => {
     await render(<SaveToCollection memeId="image" onClose={() => {}} />, api);
     await until(() => !!document.querySelector('[aria-label="Add to Favorites"]'));
     await click(document.querySelector('[aria-label="Add to Favorites"]'));
-    await until(() => !!document.querySelector('[role="alert"]'));
+    await until(() => !!document.querySelector('[data-sonner-toast][data-type="error"]'));
+    expect(document.querySelector('[role="dialog"] [role="alert"]')).toBeNull();
     expect(
       document.querySelector('[aria-label="Add to Favorites"]')?.getAttribute('aria-pressed'),
     ).toBe('false');
     await click(document.querySelector('[aria-label="Add to Favorites"]'));
     await until(() => !!document.querySelector('[aria-label="Remove from Favorites"]'));
     expect(attempts).toBe(2);
-    expect(document.querySelector('[role="alert"]')).toBeNull();
+    await until(() => !!document.querySelector('[data-sonner-toast][data-type="success"]'));
+    expect(document.querySelector('[role="dialog"] [role="alert"]')).toBeNull();
   });
 
   it('does not display another account’s cached collections after the session changes', async () => {
