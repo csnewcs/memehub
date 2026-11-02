@@ -49,7 +49,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if err := app.SeedDemo(startup); err != nil {
+		return errors.New("cannot initialize demo samples")
+	}
 	store := storage.New(cfg)
+	if cfg.DemoMode {
+		store, err = storage.NewLocal(cfg)
+		if err != nil {
+			return errors.New("cannot initialize demo data directory")
+		}
+	}
 	if store != nil {
 		cleaner := &cleanup.Worker{DB: pool, Store: store, DeletedRetention: cfg.DeletedImageRetention, UploadRetention: cfg.IncompleteUploadRetention}
 		cleanupDone := make(chan struct{})

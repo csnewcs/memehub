@@ -3,6 +3,8 @@
   "private": true,
   "scripts": {
     "dev": "go run ./cmd/api -env-file ../../.env",
+    "dev:demo": "DEMO_MODE=true DEMO_DATA_DIR=${DEMO_DATA_DIR:-../../data} go run ./cmd/api -env-file ../../.env.demo",
+    "migrate:demo": "DEMO_MODE=true go run ./cmd/migrate -env-file ../../.env.demo",
     "build": "go build -o ../../dist/api ./cmd/api",
     "check": "go vet ./...",
     "test": "go test -race ./...",
