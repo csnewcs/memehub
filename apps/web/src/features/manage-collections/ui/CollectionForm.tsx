@@ -34,12 +34,12 @@ export function CollectionForm({
   }
   return (
     <form onSubmit={submit} className="space-y-2">
-      <div className="relative">
+      <div className="flex min-w-0 items-center gap-2">
         <Input
           name="collection-name"
           aria-label="New collection"
           placeholder="New collection"
-          className="pr-11"
+          className="flex-1"
           value={name}
           maxLength={100}
           required
@@ -52,8 +52,7 @@ export function CollectionForm({
         <Button
           type="submit"
           variant="ghost"
-          size="icon-sm"
-          className="absolute right-0.5 top-1/2 -translate-y-1/2"
+          size="icon"
           aria-label={memeId ? 'Create & save' : 'Create collection'}
           title={memeId ? 'Create & save' : 'Create collection'}
           disabled={!name.trim() || create.isPending || disabled}
