@@ -19,6 +19,10 @@ func TestConfigurationValidation(t *testing.T) {
 		{"unbounded session", "SESSION_TTL_SECONDS", "999999999999", true},
 		{"missing model", "OPENAI_MODEL", "", true},
 		{"invalid text limit", "TEXT_MAX_LENGTH", "-1", true},
+		{"invalid upload limit", "UPLOAD_MAX_BYTES", "52428801", true},
+		{"unsupported image type", "UPLOAD_ALLOWED_MIME_TYPES", "image/svg+xml", true},
+		{"excessive signed URL lifetime", "S3_PRESIGN_TTL_SECONDS", "86400", true},
+		{"storage without credentials", "S3_ENDPOINT", "http://localhost:9000", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			values := map[string]string{}

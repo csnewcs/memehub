@@ -6,18 +6,24 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	Env, HTTPAddr, DatabaseURL, AppBaseURL                      string
-	OIDCIssuer, OIDCClientID, OIDCClientSecret, OIDCRedirectURL string
-	SessionTTL                                                  time.Duration
-	CookieSecure                                                bool
-	TextMaxLength                                               int
-	OpenAIModel                                                 string
+	Env, HTTPAddr, DatabaseURL, AppBaseURL                                      string
+	OIDCIssuer, OIDCClientID, OIDCClientSecret, OIDCRedirectURL                 string
+	SessionTTL                                                                  time.Duration
+	CookieSecure                                                                bool
+	TextMaxLength                                                               int
+	OpenAIModel                                                                 string
+	S3Endpoint, S3PresignEndpoint, S3Region, S3Bucket, S3AccessKey, S3SecretKey string
+	S3PathStyle                                                                 bool
+	S3TTL                                                                       time.Duration
+	UploadMaxBytes                                                              int64
+	UploadAllowedMIMEs                                                          []string
 }
 
 func Load(envFile string) (Config, error) {
@@ -82,6 +88,51 @@ func Parse(get func(string) string) (Config, error) {
 	c.TextMaxLength, err = strconv.Atoi(get("TEXT_MAX_LENGTH"))
 	if err != nil || c.TextMaxLength <= 0 || c.TextMaxLength > 100000 {
 		return c, fmt.Errorf("TEXT_MAX_LENGTH must be between 1 and 100000")
+	}
+	c.UploadMaxBytes = 10 << 20
+	if raw := get("UPLOAD_MAX_BYTES"); raw != "" {
+		c.UploadMaxBytes, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || c.UploadMaxBytes < 1 || c.UploadMaxBytes > 50<<20 {
+			return c, fmt.Errorf("UPLOAD_MAX_BYTES must be between 1 and 52428800")
+		}
+	}
+	c.UploadAllowedMIMEs = []string{"image/jpeg", "image/png", "image/webp"}
+	if raw := get("UPLOAD_ALLOWED_MIME_TYPES"); raw != "" {
+		c.UploadAllowedMIMEs = strings.Split(raw, ",")
+	}
+	for _, value := range c.UploadAllowedMIMEs {
+		if value != "image/jpeg" && value != "image/png" && value != "image/webp" {
+			return c, fmt.Errorf("unsupported UPLOAD_ALLOWED_MIME_TYPES")
+		}
+	}
+	c.S3Endpoint, c.S3PresignEndpoint = get("S3_ENDPOINT"), get("S3_PRESIGN_ENDPOINT")
+	c.S3Region, c.S3Bucket = get("S3_REGION"), get("S3_BUCKET")
+	c.S3AccessKey, c.S3SecretKey = get("S3_ACCESS_KEY_ID"), get("S3_SECRET_ACCESS_KEY")
+	c.S3TTL = 15 * time.Minute
+	if raw := get("S3_PRESIGN_TTL_SECONDS"); raw != "" {
+		seconds, e := strconv.Atoi(raw)
+		if e != nil || seconds < 1 || seconds > 3600 {
+			return c, fmt.Errorf("S3_PRESIGN_TTL_SECONDS must be between 1 and 3600")
+		}
+		c.S3TTL = time.Duration(seconds) * time.Second
+	}
+	if c.S3Endpoint != "" {
+		if c.S3PresignEndpoint == "" {
+			c.S3PresignEndpoint = c.S3Endpoint
+		}
+		for _, endpoint := range []string{c.S3Endpoint, c.S3PresignEndpoint} {
+			u, e := url.Parse(endpoint)
+			if e != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") || (c.Env == "production" && u.Scheme != "https") {
+				return c, fmt.Errorf("invalid S3 endpoint")
+			}
+		}
+		if c.S3Region == "" || c.S3Bucket == "" || c.S3AccessKey == "" || c.S3SecretKey == "" {
+			return c, fmt.Errorf("S3 region, bucket, and credentials are required")
+		}
+		c.S3PathStyle, err = strconv.ParseBool(get("S3_FORCE_PATH_STYLE"))
+		if err != nil {
+			return c, fmt.Errorf("S3_FORCE_PATH_STYLE must be a boolean")
+		}
 	}
 	return c, nil
 }

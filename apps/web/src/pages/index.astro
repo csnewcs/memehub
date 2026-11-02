@@ -1,15 +1,20 @@
+---
+import LibraryApp from '../app/providers/LibraryApp';
+import '../shared/styles/global.css';
+const apiBase = import.meta.env.PUBLIC_API_BASE_URL || '/api';
+---
+
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Memehub</title>
+    <meta name="description" content="A home for image and text memes. Search the collection and find your next perfect reaction." />
+    <meta name="theme-color" content="#0a0a0a" />
+    <title>Memehub — The internet, collected.</title>
   </head>
   <body>
-    <main>
-      <h1>Memehub</h1>
-      <p>The backend is under development.</p>
-      <a href="/api/auth/login">Sign in</a>
-    </main>
+    <a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-background focus:p-4">Skip to collection</a>
+    <LibraryApp apiBase={apiBase} client:load />
   </body>
 </html>

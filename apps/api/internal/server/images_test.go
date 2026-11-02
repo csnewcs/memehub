@@ -1,0 +1,224 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"hash/crc32"
+	"image"
+	"image/png"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/noeulnight/memehub/apps/api/internal/config"
+	"github.com/noeulnight/memehub/apps/api/internal/storage"
+)
+
+func testPNG(t *testing.T) ([]byte, string) {
+	t.Helper()
+	var b bytes.Buffer
+	if err := png.Encode(&b, image.NewRGBA(image.Rect(0, 0, 1000, 500))); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(b.Bytes())
+	return b.Bytes(), hex.EncodeToString(sum[:])
+}
+func TestPrepareImage(t *testing.T) {
+	data, hash := testPNG(t)
+	width, height, thumb, err := prepareImage(data, "image/png", hash, int64(len(data)))
+	if err != nil || width != 1000 || height != 500 {
+		t.Fatalf("prepare image: %d %d %v", width, height, err)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(thumb))
+	if err != nil || cfg.Width != 640 || cfg.Height != 320 {
+		t.Fatalf("thumbnail: %+v %v", cfg, err)
+	}
+	invalidData := []byte("not an image")
+	invalidHash := sha256.Sum256(invalidData)
+	oversized := bytes.Clone(data)
+	binary.BigEndian.PutUint32(oversized[16:20], 5000)
+	binary.BigEndian.PutUint32(oversized[20:24], 5000)
+	binary.BigEndian.PutUint32(oversized[29:33], crc32.ChecksumIEEE(oversized[12:29]))
+	oversizedHash := sha256.Sum256(oversized)
+	for _, tc := range []struct {
+		name, mime, hash string
+		size             int64
+		data             []byte
+	}{
+		{"wrong MIME", "image/jpeg", hash, int64(len(data)), data},
+		{"wrong hash", "image/png", "0000000000000000000000000000000000000000000000000000000000000000", int64(len(data)), data},
+		{"wrong size", "image/png", hash, int64(len(data) + 1), data},
+		{"invalid data", "image/png", hex.EncodeToString(invalidHash[:]), int64(len(invalidData)), invalidData},
+		{"oversized decoded dimensions", "image/png", hex.EncodeToString(oversizedHash[:]), int64(len(oversized)), oversized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, _, err := prepareImage(tc.data, tc.mime, tc.hash, tc.size); err == nil {
+				t.Fatal("invalid image accepted")
+			}
+		})
+	}
+}
+func TestImageLifecycle(t *testing.T) {
+	endpoint := os.Getenv("TEST_S3_ENDPOINT")
+	if endpoint == "" {
+		endpoint = fakeObjectStore(t)
+	}
+	pool := testPool(t)
+	issuer := newIssuer(t)
+	bucket := "memehub-test-" + time.Now().Format("150405")
+	cfg := config.Config{AppBaseURL: "http://localhost:4321", OIDCIssuer: issuer.server.URL, OIDCClientID: "test-client", OIDCRedirectURL: "http://localhost:4321/api/auth/callback", SessionTTL: time.Hour, TextMaxLength: 10000, OpenAIModel: "test-model", S3Endpoint: endpoint, S3PresignEndpoint: endpoint, S3Region: "us-east-1", S3Bucket: bucket, S3AccessKey: "memehub-test", S3SecretKey: "memehub-test-secret", S3PathStyle: true, S3TTL: time.Minute, UploadMaxBytes: 10 << 20, UploadAllowedMIMEs: []string{"image/png", "image/jpeg", "image/webp"}}
+	client := s3.NewFromConfig(aws.Config{Region: cfg.S3Region, Credentials: credentials.NewStaticCredentialsProvider(cfg.S3AccessKey, cfg.S3SecretKey, "")}, func(o *s3.Options) { o.BaseEndpoint = aws.String(endpoint); o.UsePathStyle = true })
+	if _, err := client.CreateBucket(context.Background(), &s3.CreateBucketInput{Bucket: aws.String(bucket)}); err != nil {
+		t.Fatal(err)
+	}
+	app, err := New(context.Background(), cfg, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := app.Handler()
+	cookies, csrf := signIn(t, h, issuer, "author", false)
+	other, otherCSRF := signIn(t, h, issuer, "other", false)
+	data, hash := testPNG(t)
+	input := map[string]any{"content_type": "image", "original_filename": "meme.png", "mime_type": "image/png", "size_bytes": len(data), "sha256": hash, "title": "Image meme", "source_name": "Source", "tags": []string{"image"}}
+	mustStatus(t, request(t, h, "POST", "/api/memes", input, nil, ""), 401)
+	invalid := map[string]any{"content_type": "image", "original_filename": "m.svg", "mime_type": "image/svg+xml", "size_bytes": 100, "sha256": hash}
+	mustStatus(t, request(t, h, "POST", "/api/memes", invalid, cookies, csrf), 422)
+	created := request(t, h, "POST", "/api/memes", input, cookies, csrf)
+	mustStatus(t, created, 201)
+	var reservation struct {
+		Meme
+		Upload storage.Upload `json:"upload"`
+	}
+	if err = json.Unmarshal(created.Body.Bytes(), &reservation); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/memes/" + reservation.ID.String()
+	mustStatus(t, request(t, h, "GET", path+"/media", nil, nil, ""), 404)
+	mustStatus(t, request(t, h, "GET", path, nil, nil, ""), 404)
+	before := request(t, h, "GET", "/api/memes?content_type=image", nil, nil, "")
+	mustStatus(t, before, 200)
+	var page struct {
+		Items []Meme `json:"items"`
+	}
+	if err = json.Unmarshal(before.Body.Bytes(), &page); err != nil || len(page.Items) != 0 {
+		t.Fatal("incomplete image is public")
+	}
+
+	mustStatus(t, request(t, h, "POST", path+"/upload-url", nil, other, otherCSRF), 404)
+	mustStatus(t, request(t, h, "POST", path+"/upload-completion", nil, cookies, ""), 403)
+	mustStatus(t, request(t, h, "POST", path+"/upload-completion", nil, other, otherCSRF), 404)
+	mustStatus(t, request(t, h, "POST", path+"/upload-completion", nil, cookies, csrf), 422)
+	put := func(payload []byte) {
+		t.Helper()
+		req, err := http.NewRequest("PUT", reservation.Upload.URL, bytes.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for k, v := range reservation.Upload.Headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("S3 upload %d: %s", resp.StatusCode, body)
+		}
+	}
+	// Same byte count but different data must fail hash verification.
+	corrupt := bytes.Clone(data)
+	corrupt[len(corrupt)-1] ^= 1
+	put(corrupt)
+	mustStatus(t, request(t, h, "POST", path+"/upload-completion", nil, cookies, csrf), 422)
+	put(data)
+	mustStatus(t, request(t, h, "POST", path+"/upload-completion", nil, cookies, csrf), 200)
+	mustStatus(t, request(t, h, "POST", path+"/upload-completion", nil, cookies, csrf), 200)
+	mustStatus(t, request(t, h, "POST", path+"/upload-url", nil, cookies, csrf), 409)
+	mustStatus(t, request(t, h, "GET", path, nil, nil, ""), 200)
+	after := request(t, h, "GET", "/api/memes?content_type=image&q=Image", nil, nil, "")
+	mustStatus(t, after, 200)
+	if err = json.Unmarshal(after.Body.Bytes(), &page); err != nil || len(page.Items) != 1 || page.Items[0].ID != reservation.ID {
+		t.Fatal("ready image is missing from search")
+	}
+
+	media := request(t, h, "GET", path+"/media", nil, nil, "")
+	mustStatus(t, media, 200)
+	var urls struct{ Original, Thumbnail storage.SignedURL }
+	if err = json.Unmarshal(media.Body.Bytes(), &urls); err != nil {
+		t.Fatal(err)
+	}
+	// An unexpired staging URL must not overwrite the frozen original.
+	put(corrupt)
+	for _, url := range []string{urls.Original.URL, urls.Thumbnail.URL} {
+		resp, err := http.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("media %d: %s", resp.StatusCode, body)
+		}
+		if url == urls.Original.URL && !bytes.Equal(body, data) {
+			t.Fatal("original was overwritten through staging URL")
+		}
+		if _, _, err = image.DecodeConfig(bytes.NewReader(body)); err != nil {
+			t.Fatal("invalid media", err)
+		}
+	}
+	var jobs int
+	if err = pool.QueryRow(context.Background(), "SELECT count(*) FROM jobs WHERE meme_id=$1 AND type='analyze_content'", reservation.ID).Scan(&jobs); err != nil || jobs != 1 {
+		t.Fatalf("expected one automatic analysis job: %d %v", jobs, err)
+	}
+}
+
+// Local transport fixture; TEST_S3_ENDPOINT can run the same lifecycle against real S3-compatible storage.
+func fakeObjectStore(t *testing.T) string {
+	t.Helper()
+	var mu sync.Mutex
+	objects := map[string][]byte{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case "PUT":
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+			objects[r.URL.Path] = data
+			w.WriteHeader(200)
+		case "GET":
+			data, ok := objects[r.URL.Path]
+			if !ok {
+				w.Header().Set("Content-Type", "application/xml")
+				w.WriteHeader(404)
+				_, _ = w.Write([]byte("<Error><Code>NoSuchKey</Code></Error>"))
+				return
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(data)
+		case "DELETE":
+			delete(objects, r.URL.Path)
+			w.WriteHeader(204)
+		default:
+			w.WriteHeader(405)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}

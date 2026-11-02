@@ -13,10 +13,12 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/noeulnight/memehub/apps/api/internal/config"
+	"github.com/noeulnight/memehub/apps/api/internal/storage"
 	"golang.org/x/oauth2"
 )
 
 type Server struct {
+	store    *storage.Store
 	cfg      config.Config
 	db       *pgxpool.Pool
 	oauth    oauth2.Config
@@ -30,7 +32,7 @@ func New(ctx context.Context, cfg config.Config, db *pgxpool.Pool) (*Server, err
 	if err != nil {
 		return nil, errors.New("OIDC discovery failed")
 	}
-	return &Server{cfg: cfg, db: db, oauth: oauth2.Config{ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCClientSecret, Endpoint: provider.Endpoint(), RedirectURL: cfg.OIDCRedirectURL, Scopes: []string{oidc.ScopeOpenID, "profile"}}, verifier: provider.VerifierContext(oidc.ClientContext(ctx, client), &oidc.Config{ClientID: cfg.OIDCClientID}), client: client}, nil
+	return &Server{store: storage.New(cfg), cfg: cfg, db: db, oauth: oauth2.Config{ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCClientSecret, Endpoint: provider.Endpoint(), RedirectURL: cfg.OIDCRedirectURL, Scopes: []string{oidc.ScopeOpenID, "profile"}}, verifier: provider.VerifierContext(oidc.ClientContext(ctx, client), &oidc.Config{ClientID: cfg.OIDCClientID}), client: client}, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -50,10 +52,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/me", s.me)
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
 	mux.HandleFunc("GET /api/memes", s.listMemes)
+	mux.HandleFunc("GET /api/search/suggestions", s.searchSuggestions)
 	mux.HandleFunc("GET /api/memes/{id}", s.getMeme)
 	mux.HandleFunc("POST /api/memes", s.createMeme)
 	mux.HandleFunc("PUT /api/memes/{id}", s.updateMeme)
 	mux.HandleFunc("DELETE /api/memes/{id}", s.deleteMeme)
+	mux.HandleFunc("POST /api/memes/{id}/upload-url", s.renewUpload)
+	mux.HandleFunc("POST /api/memes/{id}/upload-completion", s.completeUpload)
+	mux.HandleFunc("GET /api/memes/{id}/media", s.media)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Cache-Control", "no-store")

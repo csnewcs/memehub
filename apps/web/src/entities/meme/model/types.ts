@@ -1,0 +1,20 @@
+export type Meme = {
+  id: string;
+  created_by: string;
+  content_revision: number;
+  source_note: string | null;
+  created_by_username: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  content_type: 'text' | 'image';
+  title: string;
+  body_text: string | null;
+  description: string;
+  extracted_text: string;
+  source_url: string | null;
+  source_name: string | null;
+  source_author: string | null;
+  tags: string[];
+};
+export type MemePage = { items: Meme[]; next_cursor: string | null };
+export type ContentFilter = '' | 'image' | 'text';

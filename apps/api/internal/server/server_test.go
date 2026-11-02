@@ -103,7 +103,7 @@ func newIssuer(t *testing.T) *fakeIssuer {
 			problem(w, 400, "invalid_grant")
 			return
 		}
-		payload, _ := json.Marshal(map[string]any{"iss": f.server.URL, "aud": "test-client", "sub": entry.subject, "nonce": entry.nonce, "name": "Test User", "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix()})
+		payload, _ := json.Marshal(map[string]any{"iss": f.server.URL, "aud": "test-client", "sub": entry.subject, "nonce": entry.nonce, "name": "Test User", "preferred_username": entry.subject, "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix()})
 		signed, err := signer.Sign(payload)
 		if err != nil {
 			w.WriteHeader(500)
@@ -232,6 +232,9 @@ func TestOIDCAndTextMemeLifecycle(t *testing.T) {
 	if len(meme.Tags) != 2 || meme.BodyText == nil || *meme.BodyText != input["body_text"] || meme.AnalysisStatus != "queued" {
 		t.Fatalf("unexpected meme: %+v", meme)
 	}
+	if meme.CreatedByName == nil || *meme.CreatedByName != "Test User" || meme.CreatedAt.IsZero() {
+		t.Fatalf("uploader metadata missing: %+v", meme)
+	}
 	var jobs int
 	if err = pool.QueryRow(context.Background(), "SELECT count(*) FROM jobs WHERE meme_id=$1 AND provider='openai' AND requested_model='test-model'", meme.ID).Scan(&jobs); err != nil || jobs != 1 {
 		t.Fatalf("analysis job missing: %d %v", jobs, err)
@@ -246,6 +249,18 @@ func TestOIDCAndTextMemeLifecycle(t *testing.T) {
 	}
 	if err = json.Unmarshal(list.Body.Bytes(), &page); err != nil || len(page.Items) != 1 {
 		t.Fatalf("search failed: %s", list.Body.String())
+	}
+	if page.Items[0].CreatedByName == nil || *page.Items[0].CreatedByName != "Test User" || !page.Items[0].CreatedAt.Equal(meme.CreatedAt) {
+		t.Fatal("list lost uploader metadata")
+	}
+	if _, err = pool.Exec(context.Background(), "UPDATE users SET display_name=NULL WHERE id=$1", meme.CreatedBy); err != nil {
+		t.Fatal(err)
+	}
+	unnamed := request(t, h, "GET", path, nil, nil, "")
+	mustStatus(t, unnamed, 200)
+	var unnamedMeme Meme
+	if err = json.Unmarshal(unnamed.Body.Bytes(), &unnamedMeme); err != nil || unnamedMeme.CreatedByName != nil {
+		t.Fatal("uploader without a display name must remain readable")
 	}
 	noMatch := request(t, h, "GET", "/api/memes?q=100_", nil, nil, "")
 	mustStatus(t, noMatch, 200)
@@ -315,5 +330,190 @@ func TestSchemaRejectsInvalidContent(t *testing.T) {
 		if (err != nil) != (i == 1) {
 			t.Fatal(fmt.Sprintf("active job uniqueness: %v", err))
 		}
+	}
+}
+
+func TestMemeManagementPermissions(t *testing.T) {
+	pool := testPool(t)
+	issuer := newIssuer(t)
+	cfg := config.Config{AppBaseURL: "http://localhost:4321", OIDCIssuer: issuer.server.URL, OIDCClientID: "test-client", OIDCRedirectURL: "http://localhost:4321/api/auth/callback", SessionTTL: time.Hour, TextMaxLength: 10000, OpenAIModel: "test-model"}
+	app, err := New(context.Background(), cfg, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := app.Handler()
+	owner, ownerCSRF := signIn(t, h, issuer, "owner", false)
+	other, otherCSRF := signIn(t, h, issuer, "other", false)
+	admin, adminCSRF := signIn(t, h, issuer, "admin", false)
+	if _, err = pool.Exec(context.Background(), "UPDATE users SET is_admin=true WHERE oidc_subject='admin'"); err != nil {
+		t.Fatal(err)
+	}
+	me := request(t, h, "GET", "/api/auth/me", nil, admin, "")
+	mustStatus(t, me, 200)
+	var identity struct {
+		IsAdmin bool `json:"is_admin"`
+	}
+	if err = json.Unmarshal(me.Body.Bytes(), &identity); err != nil || !identity.IsAdmin {
+		t.Fatal("admin not exposed to UI")
+	}
+	var ownerID uuid.UUID
+	if err = pool.QueryRow(context.Background(), "SELECT id FROM users WHERE oidc_subject='owner'").Scan(&ownerID); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"text", "image"} {
+		t.Run(kind, func(t *testing.T) {
+			id := uuid.New()
+			if kind == "text" {
+				_, err = pool.Exec(context.Background(), "INSERT INTO memes(id,created_by,content_type,body_text,status) VALUES($1,$2,'text','Original','ready')", id, ownerID)
+			} else {
+				_, err = pool.Exec(context.Background(), `INSERT INTO memes(id,created_by,content_type,original_filename,original_object_key,mime_type,size_bytes,width,height,sha256,status) VALUES($1,$2,'image','test.png',$3,'image/png',100,10,10,$4,'ready')`, id, ownerID, id.String(), strings.Repeat("a", 64))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := "/api/memes/" + id.String()
+			input := map[string]any{"content_type": kind, "title": "Edited", "content_revision": 0, "tags": []string{"Exact tag"}}
+			if kind == "text" {
+				input["body_text"] = "Changed"
+			} else {
+				input["extracted_text"] = "Read from image"
+			}
+			mustStatus(t, request(t, h, "PUT", path, input, nil, ""), 401)
+			mustStatus(t, request(t, h, "PUT", path, input, other, otherCSRF), 404)
+			mustStatus(t, request(t, h, "DELETE", path, nil, other, otherCSRF), 404)
+			mustStatus(t, request(t, h, "PUT", path, input, admin, ""), 403)
+			mustStatus(t, request(t, h, "DELETE", path, nil, admin, ""), 403)
+			mustStatus(t, request(t, h, "PUT", path, input, owner, ownerCSRF), 200)
+			mustStatus(t, request(t, h, "PUT", path, input, owner, ownerCSRF), 409)
+			input["content_revision"] = 1
+			updated := request(t, h, "PUT", path, input, admin, adminCSRF)
+			mustStatus(t, updated, 200)
+			var meme Meme
+			if err = json.Unmarshal(updated.Body.Bytes(), &meme); err != nil || meme.Revision != 2 || len(meme.Tags) != 1 || meme.Tags[0] != "Exact tag" {
+				t.Fatal("edit did not preserve fields and revision")
+			}
+			if kind == "image" && (meme.BodyText != nil || meme.ExtractedText != "Read from image") {
+				t.Fatal("invalid image metadata")
+			}
+			input["content_revision"] = 2
+			input["content_type"] = "image"
+			if kind == "image" {
+				input["body_text"] = "not permitted"
+			}
+			mustStatus(t, request(t, h, "PUT", path, input, owner, ownerCSRF), 422)
+			filtered := request(t, h, "GET", "/api/memes?tag=Exact+tag", nil, nil, "")
+			mustStatus(t, filtered, 200)
+			var page struct {
+				Items []Meme `json:"items"`
+			}
+			if err = json.Unmarshal(filtered.Body.Bytes(), &page); err != nil || len(page.Items) != 1 || page.Items[0].ID != id {
+				t.Fatal("exact tag filter failed")
+			}
+			if _, err = pool.Exec(context.Background(), "UPDATE users SET is_admin=false WHERE oidc_subject='admin'"); err != nil {
+				t.Fatal(err)
+			}
+			mustStatus(t, request(t, h, "DELETE", path, nil, admin, adminCSRF), 404)
+			if _, err = pool.Exec(context.Background(), "UPDATE users SET is_admin=true WHERE oidc_subject='admin'"); err != nil {
+				t.Fatal(err)
+			}
+			mustStatus(t, request(t, h, "DELETE", path, nil, admin, adminCSRF), 204)
+			mustStatus(t, request(t, h, "GET", path, nil, nil, ""), 404)
+			mustStatus(t, request(t, h, "GET", path+"/media", nil, nil, ""), 404)
+			mustStatus(t, request(t, h, "PUT", path, input, owner, ownerCSRF), 404)
+			mustStatus(t, request(t, h, "DELETE", path, nil, owner, ownerCSRF), 404)
+			if _, err = pool.Exec(context.Background(), "UPDATE memes SET deleted_at=NULL WHERE id=$1", id); err != nil {
+				t.Fatal(err)
+			}
+			mustStatus(t, request(t, h, "DELETE", path, nil, owner, ownerCSRF), 204)
+			mustStatus(t, request(t, h, "GET", path, nil, nil, ""), 404)
+		})
+	}
+	// Owners can also delete without an administrator.
+	created := request(t, h, "POST", "/api/memes", map[string]any{"content_type": "text", "body_text": "Owner deletes"}, owner, ownerCSRF)
+	mustStatus(t, created, 201)
+	var meme Meme
+	if err = json.Unmarshal(created.Body.Bytes(), &meme); err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, request(t, h, "DELETE", "/api/memes/"+meme.ID.String(), nil, owner, ownerCSRF), 204)
+}
+
+func TestUploaderAndOwnLibraryFilters(t *testing.T) {
+	pool := testPool(t)
+	issuer := newIssuer(t)
+	cfg := config.Config{AppBaseURL: "http://localhost:4321", OIDCIssuer: issuer.server.URL, OIDCClientID: "test-client", OIDCRedirectURL: "http://localhost:4321/api/auth/callback", SessionTTL: time.Hour, TextMaxLength: 10000, OpenAIModel: "test-model"}
+	app, err := New(context.Background(), cfg, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := app.Handler()
+	owner, csrf := signIn(t, h, issuer, "noeulnight", false)
+	other, otherCSRF := signIn(t, h, issuer, "other", false)
+	for _, entry := range []struct {
+		cookies    []*http.Cookie
+		csrf, body string
+	}{{owner, csrf, "cat"}, {owner, csrf, "dog"}, {other, otherCSRF, "cat"}} {
+		mustStatus(t, request(t, h, "POST", "/api/memes", map[string]any{"content_type": "text", "body_text": entry.body, "tags": []string{"animal"}}, entry.cookies, entry.csrf), 201)
+	}
+	me := request(t, h, "GET", "/api/auth/me", nil, owner, "")
+	mustStatus(t, me, 200)
+	var user struct {
+		Username *string `json:"username"`
+	}
+	if err = json.Unmarshal(me.Body.Bytes(), &user); err != nil || user.Username == nil || *user.Username != "noeulnight" {
+		t.Fatal("verified OIDC username missing")
+	}
+	mustStatus(t, request(t, h, "GET", "/api/memes?mine=true", nil, nil, ""), 401)
+	for _, query := range []string{"mine=other", "uploader=bad+name"} {
+		mustStatus(t, request(t, h, "GET", "/api/memes?"+query, nil, owner, ""), 400)
+	}
+	for _, entry := range []struct {
+		query   string
+		cookies []*http.Cookie
+		count   int
+	}{
+		{"uploader=NOEULNIGHT", nil, 2},
+		{"uploader=noeulnight&q=cat&tag=animal", nil, 1},
+		{"uploader=missing", nil, 0},
+		{"uploader=%25", nil, 0},
+		{"mine=true", owner, 2},
+		{"mine=true", other, 1},
+		{"mine=true&uploader=noeulnight", other, 0},
+		{"mine=false", nil, 3},
+	} {
+		result := request(t, h, "GET", "/api/memes?"+entry.query, nil, entry.cookies, "")
+		mustStatus(t, result, 200)
+		var page struct {
+			Items []Meme `json:"items"`
+		}
+		if err = json.Unmarshal(result.Body.Bytes(), &page); err != nil || len(page.Items) != entry.count {
+			t.Fatalf("filter %s: want %d items", entry.query, entry.count)
+		}
+		if entry.query == "uploader=NOEULNIGHT" && (page.Items[0].CreatedByUsername == nil || *page.Items[0].CreatedByUsername != "noeulnight") {
+			t.Fatal("uploader handle missing on meme")
+		}
+	}
+	first := request(t, h, "GET", "/api/memes?mine=true&limit=1", nil, owner, "")
+	mustStatus(t, first, 200)
+	var page struct {
+		Items []Meme  `json:"items"`
+		Next  *string `json:"next_cursor"`
+	}
+	if err = json.Unmarshal(first.Body.Bytes(), &page); err != nil || page.Next == nil {
+		t.Fatal("own-library cursor missing")
+	}
+	firstID := page.Items[0].ID
+	second := request(t, h, "GET", "/api/memes?mine=true&limit=1&cursor="+url.QueryEscape(*page.Next), nil, owner, "")
+	mustStatus(t, second, 200)
+	if err = json.Unmarshal(second.Body.Bytes(), &page); err != nil || len(page.Items) != 1 || page.Items[0].ID == firstID || page.Next != nil {
+		t.Fatal("own-library cursor repeated or leaked items")
+	}
+	if _, err = pool.Exec(context.Background(), "UPDATE users SET username=NULL WHERE oidc_subject='noeulnight'"); err != nil {
+		t.Fatal(err)
+	}
+	missing := request(t, h, "GET", "/api/memes?uploader=noeulnight", nil, nil, "")
+	mustStatus(t, missing, 200)
+	if err = json.Unmarshal(missing.Body.Bytes(), &page); err != nil || len(page.Items) != 0 {
+		t.Fatal("missing handle must not match display name or subject")
 	}
 }

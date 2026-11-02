@@ -1,0 +1,15 @@
+export {
+  HiOutlineArrowUp as ArrowUpIcon,
+  HiOutlinePhotograph as ImageIcon,
+  HiOutlineRefresh as LoadingIcon,
+  HiOutlinePlus as PlusIcon,
+  HiOutlineUser as UserIcon,
+  HiOutlineSearch as SearchIcon,
+  HiOutlineHashtag as TagIcon,
+  HiOutlineLogin as LoginIcon,
+  HiOutlineLogout as LogoutIcon,
+  HiOutlineX as CloseIcon,
+  HiOutlineCheck as CheckIcon,
+  HiOutlineChevronRight as ChevronRightIcon,
+  HiCheckCircle as CircleIcon,
+} from 'react-icons/hi';

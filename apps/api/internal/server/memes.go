@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -18,43 +19,52 @@ import (
 )
 
 type memeInput struct {
-	ContentType  string   `json:"content_type"`
-	Title        string   `json:"title"`
-	BodyText     string   `json:"body_text"`
-	Description  string   `json:"description"`
-	SourceURL    string   `json:"source_url"`
-	SourceName   string   `json:"source_name"`
-	SourceAuthor string   `json:"source_author"`
-	SourceNote   string   `json:"source_note"`
-	Tags         []string `json:"tags"`
-	Revision     *int64   `json:"content_revision"`
+	ContentType      string   `json:"content_type"`
+	OriginalFilename string   `json:"original_filename"`
+	MIMEType         string   `json:"mime_type"`
+	SizeBytes        int64    `json:"size_bytes"`
+	SHA256           string   `json:"sha256"`
+	Title            string   `json:"title"`
+	BodyText         string   `json:"body_text"`
+	Description      string   `json:"description"`
+	ExtractedText    string   `json:"extracted_text"`
+	SourceURL        string   `json:"source_url"`
+	SourceName       string   `json:"source_name"`
+	SourceAuthor     string   `json:"source_author"`
+	SourceNote       string   `json:"source_note"`
+	Tags             []string `json:"tags"`
+	Revision         *int64   `json:"content_revision"`
 }
 type Meme struct {
-	ID             uuid.UUID `json:"id"`
-	CreatedBy      uuid.UUID `json:"created_by"`
-	ContentType    string    `json:"content_type"`
-	Title          string    `json:"title"`
-	BodyText       *string   `json:"body_text"`
-	Description    string    `json:"description"`
-	ExtractedText  string    `json:"extracted_text"`
-	SourceURL      *string   `json:"source_url"`
-	SourceName     *string   `json:"source_name"`
-	SourceAuthor   *string   `json:"source_author"`
-	SourceNote     *string   `json:"source_note"`
-	Status         string    `json:"status"`
-	AnalysisStatus string    `json:"analysis_status"`
-	Revision       int64     `json:"content_revision"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	Tags           []string  `json:"tags"`
+	ID                uuid.UUID `json:"id"`
+	CreatedBy         uuid.UUID `json:"created_by"`
+	CreatedByName     *string   `json:"created_by_name"`
+	CreatedByUsername *string   `json:"created_by_username"`
+	ContentType       string    `json:"content_type"`
+	Title             string    `json:"title"`
+	BodyText          *string   `json:"body_text"`
+	Description       string    `json:"description"`
+	ExtractedText     string    `json:"extracted_text"`
+	SourceURL         *string   `json:"source_url"`
+	SourceName        *string   `json:"source_name"`
+	SourceAuthor      *string   `json:"source_author"`
+	SourceNote        *string   `json:"source_note"`
+	Status            string    `json:"status"`
+	AnalysisStatus    string    `json:"analysis_status"`
+	Revision          int64     `json:"content_revision"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	Tags              []string  `json:"tags"`
 }
 
 const memeColumns = `m.id,m.created_by,m.content_type,m.title,m.body_text,m.description,m.extracted_text,m.source_url,m.source_name,m.source_author,m.source_note,m.status,m.analysis_status,m.content_revision,m.created_at,m.updated_at,
- ARRAY(SELECT t.name FROM tags t JOIN meme_tags mt ON mt.tag_id=t.id WHERE mt.meme_id=m.id ORDER BY t.normalized_name)`
+ ARRAY(SELECT t.name FROM tags t JOIN meme_tags mt ON mt.tag_id=t.id WHERE mt.meme_id=m.id ORDER BY t.normalized_name),
+ (SELECT u.display_name FROM users u WHERE u.id=m.created_by),
+ (SELECT u.username FROM users u WHERE u.id=m.created_by)`
 
 func scanMeme(row pgx.Row) (Meme, error) {
 	var m Meme
-	err := row.Scan(&m.ID, &m.CreatedBy, &m.ContentType, &m.Title, &m.BodyText, &m.Description, &m.ExtractedText, &m.SourceURL, &m.SourceName, &m.SourceAuthor, &m.SourceNote, &m.Status, &m.AnalysisStatus, &m.Revision, &m.CreatedAt, &m.UpdatedAt, &m.Tags)
+	err := row.Scan(&m.ID, &m.CreatedBy, &m.ContentType, &m.Title, &m.BodyText, &m.Description, &m.ExtractedText, &m.SourceURL, &m.SourceName, &m.SourceAuthor, &m.SourceNote, &m.Status, &m.AnalysisStatus, &m.Revision, &m.CreatedAt, &m.UpdatedAt, &m.Tags, &m.CreatedByName, &m.CreatedByUsername)
 	return m, err
 }
 func nullable(value string) *string {
@@ -72,16 +82,16 @@ func normalizeTag(value string) string {
 	}, norm.NFC.String(strings.TrimSpace(value)))
 }
 func (s *Server) validateMeme(in *memeInput) string {
-	if in.ContentType != "text" {
-		return "only_text_creation_supported"
+	if in.ContentType != "text" && in.ContentType != "image" {
+		return "invalid_content_type"
 	}
-	if !utf8.ValidString(in.BodyText) || strings.ContainsRune(in.BodyText, 0) || strings.TrimSpace(in.BodyText) == "" || utf8.RuneCountInString(in.BodyText) > s.cfg.TextMaxLength {
+	if in.ContentType == "text" && (!utf8.ValidString(in.BodyText) || strings.ContainsRune(in.BodyText, 0) || strings.TrimSpace(in.BodyText) == "" || utf8.RuneCountInString(in.BodyText) > s.cfg.TextMaxLength) {
 		return "invalid_body_text"
 	}
 	for _, item := range []struct {
 		value string
 		limit int
-	}{{in.Title, 200}, {in.Description, 10000}, {in.SourceURL, 2048}, {in.SourceName, 200}, {in.SourceAuthor, 200}, {in.SourceNote, 2000}} {
+	}{{in.Title, 200}, {in.ExtractedText, 10000}, {in.Description, 10000}, {in.SourceURL, 2048}, {in.SourceName, 200}, {in.SourceAuthor, 200}, {in.SourceNote, 2000}} {
 		if !utf8.ValidString(item.value) || strings.ContainsRune(item.value, 0) || utf8.RuneCountInString(item.value) > item.limit {
 			return "invalid_field_length"
 		}
@@ -144,6 +154,14 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 	}
 	if code := s.validateMeme(&in); code != "" {
 		problem(w, 422, code)
+		return
+	}
+	if in.ContentType == "image" {
+		if code := s.validateImage(&in); code != "" {
+			problem(w, 422, code)
+			return
+		}
+		s.reserveImage(w, r, sess, in)
 		return
 	}
 	tx, err := s.db.Begin(r.Context())
@@ -228,7 +246,7 @@ func (s *Server) updateMeme(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var revision int64
 	var contentType string
-	err = tx.QueryRow(r.Context(), "SELECT content_revision,content_type FROM memes WHERE id=$1 AND created_by=$2 AND deleted_at IS NULL FOR UPDATE", id, sess.UserID).Scan(&revision, &contentType)
+	err = tx.QueryRow(r.Context(), "SELECT content_revision,content_type FROM memes WHERE id=$1 AND (created_by=$2 OR $3) AND deleted_at IS NULL AND status='ready' FOR UPDATE", id, sess.UserID, sess.IsAdmin).Scan(&revision, &contentType)
 	if errors.Is(err, pgx.ErrNoRows) {
 		problem(w, 404, "meme_not_found")
 		return
@@ -237,16 +255,16 @@ func (s *Server) updateMeme(w http.ResponseWriter, r *http.Request) {
 		internal(w)
 		return
 	}
-	if contentType != "text" {
-		problem(w, 422, "only_text_update_supported")
+	if contentType != in.ContentType || (contentType == "image" && (in.BodyText != "" || in.OriginalFilename != "" || in.MIMEType != "" || in.SizeBytes != 0 || in.SHA256 != "")) {
+		problem(w, 422, "invalid_content_type_update")
 		return
 	}
 	if revision != *in.Revision {
 		problem(w, 409, "revision_conflict")
 		return
 	}
-	_, err = tx.Exec(r.Context(), `UPDATE memes SET title=$2,body_text=$3,description=$4,source_url=$5,source_name=$6,source_author=$7,source_note=$8,
- content_revision=content_revision+1,updated_at=now(),analysis_status=CASE WHEN EXISTS(SELECT 1 FROM jobs WHERE meme_id=$1 AND type='analyze_content' AND status IN ('queued','processing')) THEN analysis_status ELSE 'not_requested' END WHERE id=$1`, id, in.Title, in.BodyText, in.Description, nullable(in.SourceURL), nullable(in.SourceName), nullable(in.SourceAuthor), nullable(in.SourceNote))
+	_, err = tx.Exec(r.Context(), `UPDATE memes SET title=$2,body_text=$3,description=$4,source_url=$5,source_name=$6,source_author=$7,source_note=$8,extracted_text=CASE WHEN content_type='image' THEN $9 ELSE extracted_text END,
+ content_revision=content_revision+1,updated_at=now(),analysis_status=CASE WHEN EXISTS(SELECT 1 FROM jobs WHERE meme_id=$1 AND type='analyze_content' AND status IN ('queued','processing')) THEN analysis_status ELSE 'not_requested' END WHERE id=$1`, id, in.Title, nullable(in.BodyText), in.Description, nullable(in.SourceURL), nullable(in.SourceName), nullable(in.SourceAuthor), nullable(in.SourceNote), in.ExtractedText)
 	if err != nil {
 		internal(w)
 		return
@@ -276,8 +294,7 @@ func (s *Server) deleteMeme(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "invalid_meme_id")
 		return
 	}
-	// Image deletion will be enabled together with the object cleanup worker.
-	result, err := s.db.Exec(r.Context(), "UPDATE memes SET deleted_at=now(),updated_at=now() WHERE id=$1 AND created_by=$2 AND deleted_at IS NULL AND content_type='text'", id, sess.UserID)
+	result, err := s.db.Exec(r.Context(), "UPDATE memes SET deleted_at=now(),updated_at=now() WHERE id=$1 AND (created_by=$2 OR $3) AND deleted_at IS NULL", id, sess.UserID, sess.IsAdmin)
 	if err != nil {
 		internal(w)
 		return
@@ -292,6 +309,10 @@ func (s *Server) deleteMeme(w http.ResponseWriter, r *http.Request) {
 type cursor struct {
 	CreatedAt time.Time `json:"created_at"`
 	ID        uuid.UUID `json:"id"`
+}
+
+func validUsername(value string) bool {
+	return value != "" && utf8.ValidString(value) && utf8.RuneCountInString(value) <= 200 && !strings.ContainsRune(value, 0) && strings.IndexFunc(value, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) == -1
 }
 
 func (s *Server) listMemes(w http.ResponseWriter, r *http.Request) {
@@ -309,6 +330,23 @@ func (s *Server) listMemes(w http.ResponseWriter, r *http.Request) {
 	if contentType != "" && contentType != "text" && contentType != "image" {
 		problem(w, 400, "invalid_content_type")
 		return
+	}
+	username := query.Get("uploader")
+	if username != "" && !validUsername(username) {
+		problem(w, 400, "invalid_uploader")
+		return
+	}
+	var mine *uuid.UUID
+	if value := query.Get("mine"); value != "" && value != "false" {
+		if value != "true" {
+			problem(w, 400, "invalid_mine_filter")
+			return
+		}
+		sess, ok := s.authenticate(w, r, false)
+		if !ok {
+			return
+		}
+		mine = &sess.UserID
 	}
 	q := query.Get("q")
 	if !utf8.ValidString(q) || strings.ContainsRune(q, 0) || utf8.RuneCountInString(q) > 200 {
@@ -352,7 +390,9 @@ func (s *Server) listMemes(w http.ResponseWriter, r *http.Request) {
  AND NOT EXISTS(SELECT 1 FROM unnest($3::text[]) wanted(name) WHERE NOT EXISTS(
      SELECT 1 FROM meme_tags mt JOIN tags t ON t.id=mt.tag_id WHERE mt.meme_id=m.id AND t.normalized_name=wanted.name))
  AND ($4::timestamptz IS NULL OR (m.created_at,m.id)<($4,$5::uuid))
- ORDER BY m.created_at DESC,m.id DESC LIMIT $6`, pattern, contentType, tags, at, id, limit+1)
+ AND ($7='' OR EXISTS(SELECT 1 FROM users u WHERE u.id=m.created_by AND u.oidc_issuer=$8 AND lower(u.username)=lower($7)))
+ AND ($9::uuid IS NULL OR m.created_by=$9)
+ ORDER BY m.created_at DESC,m.id DESC LIMIT $6`, pattern, contentType, tags, at, id, limit+1, username, s.cfg.OIDCIssuer, mine)
 	if err != nil {
 		internal(w)
 		return

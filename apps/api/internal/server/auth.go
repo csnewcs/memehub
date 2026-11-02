@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -23,6 +24,7 @@ const flowCookie = "memehub_login"
 type session struct {
 	UserID   uuid.UUID
 	CSRFHash string
+	IsAdmin  bool
 }
 
 func newToken() string {
@@ -96,11 +98,16 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	var claims struct {
 		Name            string `json:"name"`
+		Username        string `json:"preferred_username"`
 		AuthorizedParty string `json:"azp"`
 	}
 	if err = id.Claims(&claims); err != nil || (len(id.Audience) > 1 && claims.AuthorizedParty == "") || (claims.AuthorizedParty != "" && claims.AuthorizedParty != s.cfg.OIDCClientID) {
 		problem(w, 401, "invalid_id_token")
 		return
+	}
+	username := strings.TrimSpace(claims.Username)
+	if !validUsername(username) {
+		username = ""
 	}
 	rawSession, csrf := newToken(), newToken()
 	tx, err := s.db.Begin(ctx)
@@ -110,8 +117,8 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(ctx)
 	var userID uuid.UUID
-	err = tx.QueryRow(ctx, `INSERT INTO users(id,oidc_issuer,oidc_subject,display_name) VALUES($1,$2,$3,$4)
- ON CONFLICT(oidc_issuer,oidc_subject) DO UPDATE SET display_name=excluded.display_name,updated_at=now() RETURNING id`, uuid.New(), id.Issuer, id.Subject, claims.Name).Scan(&userID)
+	err = tx.QueryRow(ctx, `INSERT INTO users(id,oidc_issuer,oidc_subject,display_name,username) VALUES($1,$2,$3,$4,$5)
+ ON CONFLICT(oidc_issuer,oidc_subject) DO UPDATE SET display_name=excluded.display_name,username=excluded.username,updated_at=now() RETURNING id`, uuid.New(), id.Issuer, id.Subject, claims.Name, nullable(username)).Scan(&userID)
 	if err != nil {
 		internal(w)
 		return
@@ -145,7 +152,7 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request, mutate boo
 		problem(w, 401, "login_required")
 		return sess, false
 	}
-	err = s.db.QueryRow(r.Context(), "SELECT user_id,csrf_hash FROM sessions WHERE token_hash=$1 AND expires_at>now()", hash(cookie.Value)).Scan(&sess.UserID, &sess.CSRFHash)
+	err = s.db.QueryRow(r.Context(), "SELECT s.user_id,s.csrf_hash,u.is_admin FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now()", hash(cookie.Value)).Scan(&sess.UserID, &sess.CSRFHash, &sess.IsAdmin)
 	if errors.Is(err, pgx.ErrNoRows) {
 		problem(w, 401, "login_required")
 		return sess, false
@@ -168,12 +175,12 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var name *string
-	if err := s.db.QueryRow(r.Context(), "SELECT display_name FROM users WHERE id=$1", sess.UserID).Scan(&name); err != nil {
+	var name, username *string
+	if err := s.db.QueryRow(r.Context(), "SELECT display_name,username FROM users WHERE id=$1", sess.UserID).Scan(&name, &username); err != nil {
 		internal(w)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"id": sess.UserID, "display_name": name})
+	writeJSON(w, 200, map[string]any{"id": sess.UserID, "display_name": name, "username": username, "is_admin": sess.IsAdmin})
 }
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	_, ok := s.authenticate(w, r, true)
