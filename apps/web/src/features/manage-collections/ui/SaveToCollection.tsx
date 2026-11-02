@@ -6,12 +6,7 @@ import { apiError, endpoint, useApi } from '../../../shared/api/client';
 import { Button } from '../../../shared/ui/button';
 import { CheckIcon, CollectionIcon, LoadingIcon, PlusIcon } from '../../../shared/ui/icons';
 import { Dialog, DialogDescription, DialogTitle } from '../../../shared/ui/dialog';
-import {
-  DialogBody,
-  DialogPanel,
-  DialogPanelFooter,
-  DialogPanelHeader,
-} from '../../../shared/ui/dialog-layout';
+import { DialogBody, DialogPanel, DialogPanelHeader } from '../../../shared/ui/dialog-layout';
 import { CollectionForm } from './CollectionForm';
 
 export function SaveToCollection({ memeId, onClose }: { memeId: string; onClose: () => void }) {
@@ -52,7 +47,7 @@ export function SaveToCollection({ memeId, onClose }: { memeId: string; onClose:
             Choose collections for this meme, or create a new one.
           </DialogDescription>
         </DialogPanelHeader>
-        <DialogBody className="space-y-5 pb-2">
+        <DialogBody className="space-y-5 pb-6">
           {session.isPending && (
             <p role="status" className="text-sm text-muted-foreground">
               Loading account…
@@ -172,11 +167,6 @@ export function SaveToCollection({ memeId, onClose }: { memeId: string; onClose:
             </>
           )}
         </DialogBody>
-        <DialogPanelFooter>
-          <Button variant="outline" onClick={onClose}>
-            Done
-          </Button>
-        </DialogPanelFooter>
       </DialogPanel>
     </Dialog>
   );

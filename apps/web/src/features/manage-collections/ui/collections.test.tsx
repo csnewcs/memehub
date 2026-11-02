@@ -99,11 +99,7 @@ describe('collection interactions', () => {
     await until(() => !!document.querySelector('[aria-label="Add to Favorites"]'));
     await click(document.querySelector('[aria-label="Add to Favorites"]'));
     await until(() => !!document.querySelector('[aria-label="Remove from Favorites"]'));
-    await click(
-      Array.from(document.querySelectorAll('button')).find(
-        (button) => button.textContent === 'Done',
-      )!,
-    );
+    await click(document.querySelector('[role="dialog"] [data-slot="dialog-close"]'));
     await act(async () => {
       document
         .querySelector('[aria-label="Account menu"]')!
@@ -234,11 +230,12 @@ describe('collection interactions', () => {
       document.querySelector('[aria-label="Add to 고양이 모음"]')?.getAttribute('aria-pressed'),
     ).toBe('false');
     expect(document.body.textContent).toContain('Removed from “고양이 모음”.');
-    await click(
-      Array.from(document.querySelectorAll('button')).find(
+    expect(
+      Array.from(document.querySelectorAll('button')).some(
         (button) => button.textContent === 'Done',
-      )!,
-    );
+      ),
+    ).toBe(false);
+    await click(document.querySelector('[role="dialog"] [data-slot="dialog-close"]'));
     expect(close).toHaveBeenCalledOnce();
   });
 
