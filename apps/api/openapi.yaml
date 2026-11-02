@@ -1,0 +1,1730 @@
+openapi: 3.1.0
+info:
+  title: Memehub API
+  version: 0.1.0
+  description: |-
+    API contract and next-step design for the Go backend. All paths are relative to /api.
+
+    Each operation has x-implementation-status: implemented, partial, or planned. Partial operations list implemented and planned content types explicitly. Planned operations and planned image extensions are designs, not available endpoints. Implementation baseline: commit 5e54bed. This document does not change server behavior.
+
+    Use OIDC login to establish a cookie session; provider tokens are never browser API credentials. For every authenticated mutation, send the service session cookie, matching Origin, and X-CSRF-Token copied from the readable memehub_csrf cookie. No bearer-token API is provided.
+
+    JSON uses snake_case. App-generated failures use {"error":"code"}. Go's unmatched-route and method errors currently use plain text; a JSON fallback is a planned consistency improvement. JSON request bodies are limited to 1 MiB; the current decoder reports oversized or malformed bodies as 400 invalid_json. Unknown JSON fields are rejected, except that the shared create decoder currently accepts and ignores content_revision.
+
+    Public reads expose the shared library only after storage status becomes ready. Author checks return 404 rather than disclose inaccessible resources. PUT replaces all editable text fields; it is not a partial update. Use content_revision to prevent lost updates.
+
+    S3 and OpenAI credentials stay on the server. Clients upload image bytes to signed storage URLs, not through the Go JSON API. AI worker execution and image handling are planned; current text creation already enqueues an analysis job. Automatic post-upload analysis remains part of the design. Rate limiting and cost quotas are not implemented yet; only the planned manual analysis endpoint declares 429.
+
+    Known implementation follow-ups: the image branches of unified POST/PUT/DELETE meme operations; administrator authorization; asynchronous image deletion; JSON fallback errors; analysis workers that preserve manual content. These are separate implementation work, not changes made by this design.
+
+    Text and image memes share POST /memes, GET /memes/{id}, PUT /memes/{id}, and DELETE /memes/{id}. The content_type discriminator selects the request and response branch. Signed upload transport and completion remain image-specific subresources; there is no separate image creation endpoint.
+
+    All analysis control, history, result inspection, and application endpoints live under /admin/memes/{id}/analyses and require a server-resolved admin role in addition to a valid session. Ordinary members, including the meme author, receive 403 admin_required. Administrators do not need to own the target meme. Check the role before loading analysis data or creating work. A client-provided role, display name, email, or unvalidated OIDC claim must never grant access.
+
+    Administrator authorization is planned, not implemented. Add a trusted server-side role source, such as users.role with a default of user and controlled administrator assignment. New OIDC registrations must not become administrators by default. No self-service role management endpoint is part of this design. Regular author permissions for editing/deleting memes remain unchanged; administrator analysis access does not grant general edit/delete powers.
+
+    Automatic analysis after upload remains enabled. Text creation atomically queues an analysis job; image preparation queues analysis after the verified image becomes ready. These are internal lifecycle actions and do not expose an analysis control API to ordinary users. Internal workers may apply the first result under the revision and manual-content preservation rules. Public meme responses continue to expose analysis_status and the resulting descriptions and tags. Analysis history, raw suggestions, manual retries, and explicit application are administrator-only.
+servers:
+  - url: /api
+    description: Same-origin API; Astro proxies this path in local development.
+tags:
+  - name: Health
+    description: Process and database health.
+  - name: Auth
+    description: OIDC login and service sessions.
+  - name: Memes
+    description: Shared library and author-owned changes.
+  - name: Uploads
+    description: Planned image reservations and media access.
+  - name: Tags
+    description: Planned shared tag discovery.
+  - name: Admin Analysis
+    description: Planned administrator-only OpenAI analysis operations.
+security: []
+paths:
+  /health/live:
+    get:
+      operationId: getLiveness
+      tags:
+        - Health
+      summary: Check HTTP process liveness
+      description: Check HTTP process liveness
+      x-implementation-status: implemented
+      security: []
+      responses:
+        "200":
+          description: Process is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /health/ready:
+    get:
+      operationId: getReadiness
+      tags:
+        - Health
+      summary: Check database connectivity
+      description: Current readiness checks database connectivity only; it does not verify migration state
+        or external providers.
+      x-implementation-status: implemented
+      security: []
+      responses:
+        "200":
+          description: Database is reachable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /auth/login:
+    get:
+      operationId: startLogin
+      tags:
+        - Auth
+      summary: Start OIDC login
+      description: Navigate the browser here. Sets the HttpOnly memehub_login cookie for
+        /api/auth/callback, valid for ten minutes. Redirects to the configured provider with state,
+        nonce, and S256 PKCE. No client-provided return URL is accepted.
+      x-implementation-status: implemented
+      security: []
+      responses:
+        "302":
+          description: Redirect to the trusted OIDC provider.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+            Set-Cookie:
+              schema:
+                type: string
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /auth/callback:
+    get:
+      operationId: completeLogin
+      tags:
+        - Auth
+      summary: Complete OIDC login
+      description: Provider callback. Requires the matching login cookie and consumes the stored state
+        exactly once. Validates ID token signature, issuer, audience, expiration, nonce, and
+        applicable azp. Sets HttpOnly memehub_session on /api and readable memehub_csrf on /.
+        Cookies use SameSite=Lax and Secure in production. Creates or updates the user by (iss,
+        sub), rotates the browser session, and redirects to the configured application root. Never
+        returns provider tokens to the frontend.
+      x-implementation-status: implemented
+      security: []
+      responses:
+        "303":
+          description: Login succeeded. Session cookies issued; redirect to application root.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+            Set-Cookie:
+              schema:
+                type: string
+                description: Multiple Set-Cookie headers are emitted.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      parameters:
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 43
+            maxLength: 43
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+  /auth/me:
+    get:
+      operationId: getCurrentUser
+      tags:
+        - Auth
+      summary: Get the logged-in user
+      description: Get the logged-in user
+      x-implementation-status: implemented
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Current user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /auth/logout:
+    post:
+      operationId: logout
+      tags:
+        - Auth
+      summary: Delete the current service session
+      description: Deletes the server-side session and expires both service cookies. Does not log the user
+        out of the upstream OIDC provider.
+      x-implementation-status: implemented
+      security:
+        - sessionCookie: []
+      responses:
+        "204":
+          description: Session deleted; no response body.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      parameters:
+        - $ref: "#/components/parameters/Origin"
+        - $ref: "#/components/parameters/CSRFToken"
+  /memes:
+    get:
+      operationId: listMemes
+      tags:
+        - Memes
+      summary: Search the shared meme library
+      description: Public endpoint. Includes only ready, non-deleted memes. Orders by created_at DESC, id
+        DESC. Returns an empty items array and a nullable next_cursor. The cursor does not create a
+        stable snapshot; newly created memes appear on a fresh first page.
+      x-implementation-status: implemented
+      security: []
+      responses:
+        "200":
+          description: Meme page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemePage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      parameters:
+        - name: q
+          in: query
+          description: Case-insensitive substring search across title, body, description, OCR text, source
+            name, source author, and tag names. Percent and underscore are literal characters.
+          required: false
+          schema:
+            type: string
+            maxLength: 200
+        - name: content_type
+          in: query
+          description: Omit to include both types.
+          required: false
+          schema:
+            type: string
+            enum:
+              - image
+              - text
+        - name: tag
+          in: query
+          description: Repeat the parameter to require every selected tag, for example tag=work&tag=monday.
+            Names use NFC and ASCII lowercase normalization. Current server rejects individual
+            values over 200 UTF-8 bytes.
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+            maxItems: 30
+          style: form
+          explode: true
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+    post:
+      operationId: createMeme
+      tags:
+        - Memes
+      summary: Create a text or image meme
+      description: Requires login, matching Origin, and CSRF token. A single endpoint accepts
+        content_type=text or content_type=image. Text requests supply body_text and are ready
+        immediately. Image requests supply original_filename, mime_type, size_bytes, and sha256 and
+        reserve an uploading image meme. Return a flat meme object in both cases; only image
+        creation adds upload instructions. Browser PUT bytes to the returned signed URL, then call
+        upload-completion. Image creation uses a distinct staging key; original_object_key points to
+        the immutable server-only original. Never accept storage keys from clients. Source and
+        manual tag fields are shared. Actual file metadata is verified before publication; duplicate
+        hashes are advisory. Repeated creation requests create separate memes. Text creation
+        atomically queues one automatic OpenAI analysis job. Image creation waits for upload
+        completion and verified preparation before automatic analysis is queued. The current backend
+        implements only the text branch and its queued job; image creation and worker execution
+        remain implementation work. The current shared decoder accepts and ignores content_revision
+        on creation; clients should omit it.
+      x-implementation-status: partial
+      security:
+        - sessionCookie: []
+      responses:
+        "201":
+          description: Text meme saved, or image meme reserved with signed upload instructions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemeCreateResponse"
+          headers:
+            Location:
+              schema:
+                type: string
+              description: Relative path /api/memes/{id}. Until an image is ready, inspect it through
+                /api/me/memes/{id}.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      parameters:
+        - $ref: "#/components/parameters/Origin"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MemeCreate"
+            examples:
+              text:
+                summary: Save a text meme
+                value:
+                  content_type: text
+                  title: Deployment mood
+                  body_text: |-
+                    When the deployment succeeds
+                    but the dashboard turns red.
+                  source_url: https://example.com/posts/123
+                  source_name: Example Community
+                  source_author: Original Creator
+                  tags:
+                    - deployment
+                    - work
+              image:
+                summary: Reserve an image upload
+                value:
+                  content_type: image
+                  original_filename: monday.png
+                  mime_type: image/png
+                  size_bytes: 1048576
+                  sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                  title: Monday mood
+                  source_url: https://example.com/posts/123
+                  tags:
+                    - work
+      x-implemented-content-types:
+        - text
+      x-planned-content-types:
+        - image
+  /memes/{id}:
+    parameters:
+      - $ref: "#/components/parameters/MemeID"
+    get:
+      operationId: getMeme
+      tags:
+        - Memes
+      summary: Get a ready meme
+      description: Public endpoint. Deleted, missing, uploading, processing, and failed memes return 404.
+        Use the planned /me/memes endpoint to view your incomplete uploads.
+      x-implementation-status: implemented
+      security: []
+      responses:
+        "200":
+          description: Ready meme.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Meme"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      operationId: replaceMeme
+      tags:
+        - Memes
+      summary: Replace editable text or image meme fields
+      description: "Author only. The same endpoint edits either type, selected by content_type; changing a
+        meme's type is not allowed. Full replacement: omitted editable strings become empty, omitted
+        source values become NULL, and omitted tags clear associations. Text requests require
+        body_text; image requests may edit extracted_text and must not include body_text or change
+        the stored file. Both require current content_revision and increment it after success.
+        Submitted tags become manual tags. A stale revision returns 409. Current backend implements
+        only the text branch; the image branch is planned."
+      x-implementation-status: partial
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Updated meme.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Meme"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      parameters:
+        - $ref: "#/components/parameters/Origin"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MemeUpdate"
+            example:
+              content_type: text
+              title: Updated title
+              body_text: |-
+                Keep the original line breaks.
+                Edit the wording here.
+              source_name: Example Community
+              tags:
+                - work
+              content_revision: 0
+      x-implemented-content-types:
+        - text
+      x-planned-content-types:
+        - image
+    delete:
+      operationId: deleteMeme
+      tags:
+        - Memes
+      summary: Soft-delete a text or image meme
+      description: Author only. The same endpoint deletes either type. Sets deleted_at and removes the
+        meme from public reads. Image deletion additionally enqueues object cleanup in the same
+        transaction. Return 204 before physical cleanup finishes. Previously issued S3 URLs remain
+        valid until expiration. Missing, already deleted, or non-owned memes return 404. Current
+        backend supports only text deletion and returns 404 for image memes; image cleanup is
+        planned.
+      x-implementation-status: partial
+      security:
+        - sessionCookie: []
+      responses:
+        "204":
+          description: Meme is no longer visible; no response body.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      parameters:
+        - $ref: "#/components/parameters/Origin"
+        - $ref: "#/components/parameters/CSRFToken"
+      x-implemented-content-types:
+        - text
+      x-planned-content-types:
+        - image
+  /me/memes:
+    get:
+      operationId: listOwnMemes
+      tags:
+        - Memes
+      summary: List your memes including incomplete uploads
+      description: Author-only list. Includes uploading, processing, ready, and failed memes; excludes
+        soft-deleted memes. Supports the same cursor ordering and limit as the public list, plus a
+        storage status filter. No client-supplied user ID is accepted.
+      x-implementation-status: planned
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Your meme page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemePage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          description: Optional storage status filter.
+          required: false
+          schema:
+            $ref: "#/components/schemas/StorageStatus"
+  /memes/{id}/upload-url:
+    parameters:
+      - $ref: "#/components/parameters/MemeID"
+    post:
+      operationId: renewUploadURL
+      tags:
+        - Uploads
+      summary: Renew the upload URL for an uploading meme
+      description: Author only. Re-signs the same reserved key while status=uploading. Returns 409 after
+        completion or while processing. Must not overwrite a ready original. Once completion starts,
+        preparation freezes the received bytes into a separate immutable server-only key; metadata,
+        thumbnails, and AI must use that frozen copy. An old PUT URL can otherwise overwrite its
+        staging key until expiration.
+      x-implementation-status: planned
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Renewed upload instructions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignedUpload"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      parameters:
+        - $ref: "#/components/parameters/Origin"
+        - $ref: "#/components/parameters/CSRFToken"
+  /memes/{id}/upload-completion:
+    parameters:
+      - $ref: "#/components/parameters/MemeID"
+    post:
+      operationId: completeImageUpload
+      tags:
+        - Uploads
+      summary: Accept upload completion and queue image preparation
+      description: Author only. Verify the reserved object exists and meets preliminary limits, freeze its
+        bytes as described by upload-url, then atomically transition uploading to processing and
+        enqueue one prepare_image job. Do not trust declared size, MIME type, or hash. The worker
+        verifies and generates a thumbnail before marking ready and queuing AI analysis. Repeated
+        completion returns the existing preparation job without duplicating work. Return 409 for a
+        failed or incompatible reservation. Processing does not imply that the image is already
+        public. Poll /api/me/memes/{id} for preparation status, Analysis history and result access
+        are restricted to administrators through /api/admin/memes/{id}/analyses.
+      x-implementation-status: planned
+      security:
+        - sessionCookie: []
+      responses:
+        "202":
+          description: Image preparation accepted or already in progress.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      parameters:
+        - $ref: "#/components/parameters/Origin"
+        - $ref: "#/components/parameters/CSRFToken"
+  /memes/{id}/media:
+    parameters:
+      - $ref: "#/components/parameters/MemeID"
+    get:
+      operationId: getMemeMedia
+      tags:
+        - Uploads
+      summary: Get temporary original and thumbnail URLs
+      description: Public only for ready, non-deleted image memes. Otherwise return 404. Never expose the
+        staging object. The browser uses these URLs for display or download; image clipboard access
+        depends on browser support and storage CORS. Previously issued signed URLs expire at
+        expires_at and are not instantly revoked by soft deletion.
+      x-implementation-status: planned
+      security: []
+      responses:
+        "200":
+          description: Temporary read URLs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Media"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /tags:
+    get:
+      operationId: suggestTags
+      tags:
+        - Tags
+      summary: Suggest shared tag names
+      description: Public autocomplete. Return only tags associated with at least one ready, non-deleted
+        meme. Order by normalized_name. Do not expose tag names that only occur in incomplete or
+        deleted submissions. Shared tag renaming and deletion are outside scope.
+      x-implementation-status: planned
+      security: []
+      responses:
+        "200":
+          description: Matching tags.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TagList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      parameters:
+        - name: q
+          in: query
+          description: Optional normalized prefix.
+          required: false
+          schema:
+            type: string
+            maxLength: 50
+        - name: limit
+          in: query
+          description: Maximum suggestions.
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+  /me/memes/{id}:
+    parameters:
+      - $ref: "#/components/parameters/MemeID"
+    get:
+      operationId: getOwnMeme
+      tags:
+        - Memes
+      summary: Inspect your meme while it is uploading or processing
+      description: Author only. Return a non-deleted meme in any storage status. Use this endpoint to poll
+        an individual upload after completion. Return 404 for another author or a deleted meme. Do
+        not include raw storage errors or storage credentials.
+      x-implementation-status: planned
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Your meme including its current storage and analysis status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Meme"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /admin/memes/{id}/analyses:
+    parameters:
+      - $ref: "#/components/parameters/MemeID"
+    post:
+      operationId: requestAnalysis
+      tags:
+        - Admin Analysis
+      summary: Request analysis or retry a failed analysis
+      description: Administrator only. Administrators may operate on any non-deleted meme, regardless of
+        its author. Require a ready, non-deleted meme and matching content_revision. Reject with 409
+        if an analysis is already queued or processing; do not spend on duplicate jobs. Create a new
+        job for a retry rather than overwriting history. Choose the OpenAI model and prompt on the
+        server. First-analysis automatic application fills only blank generated fields and adds AI
+        tags without replacing manual tags, and requires the same revision. Reanalysis produces
+        suggestions for explicit application. Never overwrite body_text or attribution. Quota and
+        cost policies must be implemented before opening this endpoint broadly.
+      x-implementation-status: planned
+      security:
+        - sessionCookie: []
+      responses:
+        "202":
+          description: New analysis queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobAccepted"
+          headers:
+            Location:
+              schema:
+                type: string
+              description: Relative path /api/admin/memes/{id}/analyses/{analysis_id}.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AdminMutationForbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      parameters:
+        - $ref: "#/components/parameters/Origin"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnalysisRequest"
+      x-required-role: admin
+    get:
+      operationId: listAnalyses
+      tags:
+        - Admin Analysis
+      summary: List a meme analysis history
+      description: Administrator only. Administrators may operate on any non-deleted meme, regardless of
+        its author. This is how administrators discover the analysis job automatically queued by
+        text creation or image preparation. Return analyze_content jobs only, newest first by
+        created_at and id. Include validated suggestions and safe error codes, with the same
+        administrator-only privacy rules as getAnalysis. Polling this endpoint never starts work.
+      x-implementation-status: planned
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Analysis history page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AdminRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      x-required-role: admin
+  /admin/memes/{id}/analyses/{analysis_id}:
+    parameters:
+      - $ref: "#/components/parameters/MemeID"
+      - $ref: "#/components/parameters/AnalysisID"
+    get:
+      operationId: getAnalysis
+      tags:
+        - Admin Analysis
+      summary: Poll an analysis and inspect its suggestions
+      description: Administrator only. Administrators may operate on any non-deleted meme, regardless of
+        its author. Match both meme ID and analysis job ID; the job must be type=analyze_content.
+        Return safe error codes and validated output only. Never return raw OpenAI responses,
+        credentials, lease tokens, or provider request IDs. Polling does not start another analysis.
+      x-implementation-status: planned
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Analysis status and optional result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Analysis"
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+              description: Suggested polling delay while queued or processing, in seconds.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AdminRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      x-required-role: admin
+  /admin/memes/{id}/analyses/{analysis_id}/application:
+    parameters:
+      - $ref: "#/components/parameters/MemeID"
+      - $ref: "#/components/parameters/AnalysisID"
+    post:
+      operationId: applyAnalysis
+      tags:
+        - Admin Analysis
+      summary: Apply selected AI suggestions
+      description: Administrator only. Administrators may operate on any non-deleted meme, regardless of
+        its author. Require completed analysis, a ready non-deleted meme, the current
+        content_revision, and unchanged analysis input. Lock the meme, check the revision and job
+        input_revision, apply selected fields, and increment revision in one transaction. Return 409
+        when any check fails; request a new analysis if its input is stale. Tags are merged, not
+        replaced; existing manual associations stay manual and newly accepted AI tags become user
+        tags. Reject extracted_text for text memes. Never apply body_text or source fields.
+        Replaying the same revision returns 409, preventing a second application.
+      x-implementation-status: planned
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Meme after applying selected suggestions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Meme"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AdminMutationForbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      parameters:
+        - $ref: "#/components/parameters/Origin"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApplyAnalysis"
+            example:
+              content_revision: 2
+              fields:
+                - description
+                - tags
+      x-required-role: admin
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: memehub_session
+      description: Opaque HttpOnly cookie issued after validated OIDC login. Database stores only its
+        SHA-256 hash. Secure in production; SameSite=Lax.
+  parameters:
+    MemeID:
+      name: id
+      in: path
+      required: true
+      description: Meme UUID.
+      schema:
+        type: string
+        format: uuid
+    AnalysisID:
+      name: analysis_id
+      in: path
+      required: true
+      description: Analysis job UUID belonging to the meme.
+      schema:
+        type: string
+        format: uuid
+    Origin:
+      name: Origin
+      in: header
+      required: true
+      description: Must equal APP_BASE_URL exactly. Browsers send this automatically for mutation requests.
+      schema:
+        type: string
+        format: uri
+    CSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: Copy the readable memehub_csrf cookie into this header. The token is bound to the
+        server-side session.
+      schema:
+        type: string
+        minLength: 43
+        maxLength: 43
+    Limit:
+      name: limit
+      in: query
+      description: Maximum number of memes in a page.
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque continuation cursor. Reuse with the same filters.
+      required: false
+      schema:
+        type: string
+        maxLength: 512
+  responses:
+    BadRequest:
+      description: Malformed request or invalid query parameter.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: invalid_json
+    Unauthorized:
+      description: Missing or expired login session; OIDC validation failure for callback requests.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: login_required
+    Forbidden:
+      description: Origin or CSRF token validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: invalid_csrf_token
+    NotFound:
+      description: Resource does not exist, was deleted, or is not accessible to the caller.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: meme_not_found
+    Conflict:
+      description: Revision mismatch or an incompatible resource or job state.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: revision_conflict
+    UnsupportedMediaType:
+      description: "A JSON request requires Content-Type: application/json."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: application_json_required
+    UnprocessableContent:
+      description: Request values violate content validation rules.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: invalid_body_text
+    TooManyRequests:
+      description: Planned request or analysis quota exceeded. This response is not implemented yet.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: rate_limit_exceeded
+      headers:
+        Retry-After:
+          description: Seconds until another attempt is allowed.
+          schema:
+            type: integer
+            minimum: 1
+    InternalError:
+      description: Internal failure. Response and logs must not disclose credentials or raw provider errors.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: internal_error
+    ServiceUnavailable:
+      description: Database is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: database_unavailable
+    AdminRequired:
+      description: The session is valid but the caller is not an administrator. Resource ownership does
+        not grant analysis access.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: admin_required
+    AdminMutationForbidden:
+      description: A valid non-admin session receives admin_required. Invalid Origin or CSRF token
+        receives invalid_csrf_token. Meme ownership does not grant administrative analysis access.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            admin:
+              value:
+                error: admin_required
+            csrf:
+              value:
+                error: invalid_csrf_token
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Stable machine-readable error code. Do not display raw provider or database errors.
+    Health:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+    User:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - display_name
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type:
+            - string
+            - "null"
+    StorageStatus:
+      type: string
+      enum:
+        - uploading
+        - processing
+        - ready
+        - failed
+    AnalysisStatus:
+      type: string
+      enum:
+        - not_requested
+        - queued
+        - processing
+        - completed
+        - failed
+    TagNames:
+      type: array
+      items:
+        type: string
+        minLength: 1
+        maxLength: 50
+      maxItems: 30
+      description: Trim whitespace, apply Unicode NFC, and deduplicate using ASCII lowercase names. Tags
+        are shared across the library.
+    TextMemeCreate:
+      type: object
+      additionalProperties: false
+      required:
+        - content_type
+        - body_text
+      properties:
+        content_type:
+          type: string
+          enum:
+            - text
+        body_text:
+          type: string
+          minLength: 1
+          maxLength: 100000
+          description: Non-blank plain text with original line breaks preserved. The effective limit is
+            TEXT_MAX_LENGTH, default 10000 Unicode code points. NUL characters are rejected.
+          example: |-
+            When the deployment succeeds
+            but the dashboard turns red.
+        title:
+          type: string
+          maxLength: 200
+          default: ""
+        description:
+          type: string
+          maxLength: 10000
+          default: ""
+        source_url:
+          type: string
+          maxLength: 2048
+          description: Optional original post URL. Allow HTTP or HTTPS with a host and no embedded
+            credentials. Empty input is stored as NULL. Never fetch the URL automatically.
+          example: https://example.com/posts/123
+        source_name:
+          type: string
+          maxLength: 200
+          example: Example Community
+        source_author:
+          type: string
+          maxLength: 200
+          description: Original creator or publisher, separate from the authenticated submitter.
+          example: Original Creator
+        source_note:
+          type: string
+          maxLength: 2000
+          description: Free-text attribution, including offline sources. Source URL is optional.
+        tags:
+          $ref: "#/components/schemas/TagNames"
+    TextMemeUpdate:
+      type: object
+      additionalProperties: false
+      required:
+        - content_type
+        - body_text
+        - content_revision
+      properties:
+        content_type:
+          type: string
+          enum:
+            - text
+        body_text:
+          type: string
+          minLength: 1
+          maxLength: 100000
+          description: Non-blank plain text with original line breaks preserved. The effective limit is
+            TEXT_MAX_LENGTH, default 10000 Unicode code points. NUL characters are rejected.
+          example: |-
+            When the deployment succeeds
+            but the dashboard turns red.
+        title:
+          type: string
+          maxLength: 200
+          default: ""
+        description:
+          type: string
+          maxLength: 10000
+          default: ""
+        source_url:
+          type: string
+          maxLength: 2048
+          description: Optional original post URL. Allow HTTP or HTTPS with a host and no embedded
+            credentials. Empty input is stored as NULL. Never fetch the URL automatically.
+          example: https://example.com/posts/123
+        source_name:
+          type: string
+          maxLength: 200
+          example: Example Community
+        source_author:
+          type: string
+          maxLength: 200
+          description: Original creator or publisher, separate from the authenticated submitter.
+          example: Original Creator
+        source_note:
+          type: string
+          maxLength: 2000
+          description: Free-text attribution, including offline sources. Source URL is optional.
+        tags:
+          $ref: "#/components/schemas/TagNames"
+        content_revision:
+          type: integer
+          format: int64
+          minimum: 0
+    ImageMemeUpdate:
+      type: object
+      additionalProperties: false
+      required:
+        - content_type
+        - content_revision
+      properties:
+        content_type:
+          type: string
+          enum:
+            - image
+        title:
+          type: string
+          maxLength: 200
+          default: ""
+        description:
+          type: string
+          maxLength: 10000
+          default: ""
+        source_url:
+          type: string
+          maxLength: 2048
+          description: Optional original post URL. Allow HTTP or HTTPS with a host and no embedded
+            credentials. Empty input is stored as NULL. Never fetch the URL automatically.
+          example: https://example.com/posts/123
+        source_name:
+          type: string
+          maxLength: 200
+          example: Example Community
+        source_author:
+          type: string
+          maxLength: 200
+          description: Original creator or publisher, separate from the authenticated submitter.
+          example: Original Creator
+        source_note:
+          type: string
+          maxLength: 2000
+          description: Free-text attribution, including offline sources. Source URL is optional.
+        tags:
+          $ref: "#/components/schemas/TagNames"
+        extracted_text:
+          type: string
+          maxLength: 100000
+        content_revision:
+          type: integer
+          format: int64
+          minimum: 0
+    Meme:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - created_by
+        - content_type
+        - title
+        - body_text
+        - description
+        - extracted_text
+        - source_url
+        - source_name
+        - source_author
+        - source_note
+        - status
+        - analysis_status
+        - content_revision
+        - created_at
+        - updated_at
+        - tags
+      properties:
+        id:
+          type: string
+          format: uuid
+        created_by:
+          type: string
+          format: uuid
+        content_type:
+          type: string
+          enum:
+            - text
+            - image
+        title:
+          type: string
+        body_text:
+          type:
+            - string
+            - "null"
+        description:
+          type: string
+        extracted_text:
+          type: string
+        source_url:
+          type:
+            - string
+            - "null"
+        source_name:
+          type:
+            - string
+            - "null"
+        source_author:
+          type:
+            - string
+            - "null"
+        source_note:
+          type:
+            - string
+            - "null"
+        status:
+          $ref: "#/components/schemas/StorageStatus"
+        analysis_status:
+          $ref: "#/components/schemas/AnalysisStatus"
+        content_revision:
+          type: integer
+          format: int64
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        tags:
+          type: array
+          items:
+            type: string
+    MemePage:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - next_cursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Meme"
+        next_cursor:
+          type:
+            - string
+            - "null"
+          description: Opaque cursor; NULL when there is no next page. Keep all filters unchanged when using it.
+    SignedUpload:
+      type: object
+      additionalProperties: false
+      required:
+        - method
+        - url
+        - headers
+        - expires_at
+      properties:
+        method:
+          type: string
+          enum:
+            - PUT
+        url:
+          type: string
+          format: uri
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Send exactly these signed headers to storage. Do not send service session cookies or
+            CSRF tokens to storage.
+        expires_at:
+          type: string
+          format: date-time
+    JobAccepted:
+      type: object
+      additionalProperties: false
+      required:
+        - job_id
+        - meme_id
+        - status
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        meme_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - queued
+            - processing
+            - completed
+        status_url:
+          type: string
+          description: Relative API path to poll. Upload completion points to /api/me/memes/{id};
+            administrative analysis points to /api/admin/memes/{id}/analyses/{analysis_id}.
+    AnalysisRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - content_revision
+      properties:
+        content_revision:
+          type: integer
+          format: int64
+          minimum: 0
+    AnalysisResult:
+      type: object
+      additionalProperties: false
+      required:
+        - title
+        - description
+        - extracted_text
+        - tags
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 10000
+        extracted_text:
+          type: string
+          description: Image OCR only; empty for text memes.
+        tags:
+          $ref: "#/components/schemas/TagNames"
+    Analysis:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - meme_id
+        - status
+        - input_revision
+        - requested_model
+        - response_model
+        - result
+        - error_code
+        - created_at
+        - finished_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        meme_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - queued
+            - processing
+            - completed
+            - failed
+        input_revision:
+          type: integer
+          format: int64
+          minimum: 0
+        requested_model:
+          type: string
+        response_model:
+          type:
+            - string
+            - "null"
+        result:
+          anyOf:
+            - $ref: "#/components/schemas/AnalysisResult"
+            - type: "null"
+        error_code:
+          type:
+            - string
+            - "null"
+        created_at:
+          type: string
+          format: date-time
+        finished_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+    ApplyAnalysis:
+      type: object
+      additionalProperties: false
+      required:
+        - content_revision
+        - fields
+      properties:
+        content_revision:
+          type: integer
+          format: int64
+          minimum: 0
+        fields:
+          type: array
+          items:
+            type: string
+            enum:
+              - title
+              - description
+              - extracted_text
+              - tags
+          minItems: 1
+          uniqueItems: true
+    SignedMedia:
+      type: object
+      additionalProperties: false
+      required:
+        - url
+        - expires_at
+      properties:
+        url:
+          type: string
+          format: uri
+        expires_at:
+          type: string
+          format: date-time
+    Media:
+      type: object
+      additionalProperties: false
+      required:
+        - original
+        - thumbnail
+      properties:
+        original:
+          $ref: "#/components/schemas/SignedMedia"
+        thumbnail:
+          anyOf:
+            - $ref: "#/components/schemas/SignedMedia"
+            - type: "null"
+    Tag:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - normalized_name
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        normalized_name:
+          type: string
+    TagList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tag"
+    AnalysisPage:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - next_cursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Analysis"
+        next_cursor:
+          type:
+            - string
+            - "null"
+          description: Opaque job-history cursor. Keep the meme ID unchanged.
+    ImageMemeCreate:
+      type: object
+      additionalProperties: false
+      required:
+        - content_type
+        - original_filename
+        - mime_type
+        - size_bytes
+        - sha256
+      properties:
+        content_type:
+          type: string
+          const: image
+        original_filename:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: monday.png
+        mime_type:
+          type: string
+          enum:
+            - image/jpeg
+            - image/png
+            - image/webp
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Declared size. The server verifies the actual uploaded size against UPLOAD_MAX_BYTES;
+            default 10485760 bytes.
+        sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          description: Client-declared SHA-256. Verify it against actual bytes before making the meme ready.
+        title:
+          type: string
+          maxLength: 200
+          default: ""
+        description:
+          type: string
+          maxLength: 10000
+          default: ""
+        source_url:
+          type: string
+          maxLength: 2048
+          description: Optional original post URL. Allow HTTP or HTTPS with a host and no embedded
+            credentials. Empty input is stored as NULL. Never fetch the URL automatically.
+          example: https://example.com/posts/123
+        source_name:
+          type: string
+          maxLength: 200
+          example: Example Community
+        source_author:
+          type: string
+          maxLength: 200
+          description: Original creator or publisher, separate from the authenticated submitter.
+          example: Original Creator
+        source_note:
+          type: string
+          maxLength: 2000
+          description: Free-text attribution, including offline sources. Source URL is optional.
+        tags:
+          $ref: "#/components/schemas/TagNames"
+    MemeCreate:
+      oneOf:
+        - $ref: "#/components/schemas/TextMemeCreate"
+        - $ref: "#/components/schemas/ImageMemeCreate"
+      discriminator:
+        propertyName: content_type
+        mapping:
+          text: "#/components/schemas/TextMemeCreate"
+          image: "#/components/schemas/ImageMemeCreate"
+    MemeUpdate:
+      oneOf:
+        - $ref: "#/components/schemas/TextMemeUpdate"
+        - $ref: "#/components/schemas/ImageMemeUpdate"
+      discriminator:
+        propertyName: content_type
+        mapping:
+          text: "#/components/schemas/TextMemeUpdate"
+          image: "#/components/schemas/ImageMemeUpdate"
+    TextMeme:
+      allOf:
+        - $ref: "#/components/schemas/Meme"
+        - type: object
+          properties:
+            content_type:
+              const: text
+    ImageMemeCreated:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - created_by
+        - content_type
+        - title
+        - body_text
+        - description
+        - extracted_text
+        - source_url
+        - source_name
+        - source_author
+        - source_note
+        - status
+        - analysis_status
+        - content_revision
+        - created_at
+        - updated_at
+        - tags
+        - upload
+      properties:
+        id:
+          type: string
+          format: uuid
+        created_by:
+          type: string
+          format: uuid
+        content_type:
+          type: string
+          const: image
+        title:
+          type: string
+        body_text:
+          type:
+            - string
+            - "null"
+        description:
+          type: string
+        extracted_text:
+          type: string
+        source_url:
+          type:
+            - string
+            - "null"
+        source_name:
+          type:
+            - string
+            - "null"
+        source_author:
+          type:
+            - string
+            - "null"
+        source_note:
+          type:
+            - string
+            - "null"
+        status:
+          $ref: "#/components/schemas/StorageStatus"
+        analysis_status:
+          $ref: "#/components/schemas/AnalysisStatus"
+        content_revision:
+          type: integer
+          format: int64
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        tags:
+          type: array
+          items:
+            type: string
+        upload:
+          $ref: "#/components/schemas/SignedUpload"
+    MemeCreateResponse:
+      description: Flat meme response for both types. Only image creation adds signed upload instructions.
+        Text creation keeps the existing response shape.
+      oneOf:
+        - $ref: "#/components/schemas/TextMeme"
+        - $ref: "#/components/schemas/ImageMemeCreated"
+      discriminator:
+        propertyName: content_type
+        mapping:
+          text: "#/components/schemas/TextMeme"
+          image: "#/components/schemas/ImageMemeCreated"
