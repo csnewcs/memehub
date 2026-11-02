@@ -13,6 +13,8 @@ import (
 )
 
 type Config struct {
+	DemoMode                                                                    bool
+	DemoDataDir                                                                 string
 	Env, HTTPAddr, DatabaseURL, AppBaseURL                                      string
 	OIDCIssuer, OIDCClientID, OIDCClientSecret, OIDCRedirectURL                 string
 	SessionTTL                                                                  time.Duration
@@ -38,7 +40,50 @@ func Load(envFile string) (Config, error) {
 }
 
 func Parse(get func(string) string) (Config, error) {
+	demo := false
+	if raw := get("DEMO_MODE"); raw != "" {
+		var err error
+		demo, err = strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("DEMO_MODE must be a boolean")
+		}
+	}
+	if demo {
+		original := get
+		defaults := map[string]string{
+			"APP_ENV": "development", "HTTP_ADDR": "127.0.0.1:8080",
+			"DATABASE_URL": "postgres://memehub:change-me@localhost:5432/memehub?sslmode=disable",
+			"APP_BASE_URL": "http://localhost:4321", "SESSION_COOKIE_SECURE": "false",
+			"SESSION_TTL_SECONDS": "604800", "TEXT_MAX_LENGTH": "10000",
+			"DEMO_DATA_DIR": "./data",
+		}
+		get = func(key string) string {
+			switch key {
+			case "OIDC_ISSUER_URL":
+				return "http://localhost/demo"
+			case "OIDC_CLIENT_ID", "OPENAI_MODEL":
+				return "demo"
+			case "OIDC_REDIRECT_URL":
+				base := original("APP_BASE_URL")
+				if base == "" {
+					base = defaults["APP_BASE_URL"]
+				}
+				return strings.TrimRight(base, "/") + "/api/auth/callback"
+			case "S3_ENDPOINT", "S3_PRESIGN_ENDPOINT", "OPENAI_API_KEY":
+				return ""
+			}
+			if value := original(key); value != "" {
+				return value
+			}
+			return defaults[key]
+		}
+		if get("APP_ENV") != "development" && get("APP_ENV") != "test" {
+			return Config{}, fmt.Errorf("DEMO_MODE is only allowed in development or test")
+		}
+	}
 	c := Config{Env: get("APP_ENV"), HTTPAddr: get("HTTP_ADDR"), DatabaseURL: get("DATABASE_URL"), AppBaseURL: get("APP_BASE_URL"), OIDCIssuer: get("OIDC_ISSUER_URL"), OIDCClientID: get("OIDC_CLIENT_ID"), OIDCClientSecret: get("OIDC_CLIENT_SECRET"), OIDCRedirectURL: get("OIDC_REDIRECT_URL"), OpenAIModel: get("OPENAI_MODEL")}
+	c.DemoMode = demo
+	c.DemoDataDir = get("DEMO_DATA_DIR")
 	if c.Env != "development" && c.Env != "test" && c.Env != "production" {
 		return c, fmt.Errorf("APP_ENV must be development, test, or production")
 	}

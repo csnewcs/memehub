@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/noeulnight/memehub/apps/api/internal/config"
 	"github.com/noeulnight/memehub/apps/api/internal/database"
 )
 
@@ -19,6 +20,14 @@ func main() {
 		os.Exit(1)
 	}
 	dsn := os.Getenv("DATABASE_URL")
+	if os.Getenv("DEMO_MODE") != "" && os.Getenv("DEMO_MODE") != "false" {
+		cfg, err := config.Parse(os.Getenv)
+		if err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
+		dsn = cfg.DatabaseURL
+	}
 	if dsn == "" {
 		slog.Error("DATABASE_URL is required")
 		os.Exit(1)
