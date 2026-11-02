@@ -11,6 +11,7 @@ import {
 } from '../../../shared/ui/dialog-layout';
 import { MemeShare } from './MemeShare';
 import { MemeCardInteraction } from './MemeCardInteraction';
+import { MemeSave } from './MemeSave';
 import { Skeleton } from '../../../shared/ui/skeleton';
 import { HoverPreview } from '../../../shared/ui/hover-preview';
 
@@ -72,6 +73,7 @@ export function MemeCard({
   index,
   onTagSearch,
   onUserSearch,
+  onSave,
   manage,
   analysis,
   detailOnly = false,
@@ -81,6 +83,7 @@ export function MemeCard({
   index: number;
   onTagSearch: (tag: string) => void;
   onUserSearch: (username: string) => void;
+  onSave: () => void;
   manage?: (props: {
     content: ReactNode;
     actions: ReactNode;
@@ -211,6 +214,7 @@ export function MemeCard({
             <MemeCardInteraction
               meme={meme}
               onDetails={() => changeOpen(true)}
+              onSave={onSave}
               optionsTarget={actionsTarget}
               hovered={hovered}
             >
@@ -246,7 +250,12 @@ export function MemeCard({
           {manage ? (
             manage({
               content,
-              actions: <MemeShare meme={meme} />,
+              actions: (
+                <>
+                  <MemeShare meme={meme} />
+                  <MemeSave onSave={onSave} />
+                </>
+              ),
               onDeleted: () => changeOpen(false),
               onPendingChange: setBusy,
             })
@@ -255,6 +264,7 @@ export function MemeCard({
               {content}
               <DialogPanelFooter>
                 <MemeShare meme={meme} />
+                <MemeSave onSave={onSave} />
               </DialogPanelFooter>
             </div>
           )}
