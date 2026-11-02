@@ -10,7 +10,13 @@ import {
   DialogPanelFooter,
 } from '../../../shared/ui/dialog-layout';
 import { Button } from '../../../shared/ui/button';
-import { CopyIcon, DetailsIcon, CheckIcon, LoadingIcon } from '../../../shared/ui/icons';
+import {
+  CopyIcon,
+  DetailsIcon,
+  CheckIcon,
+  LoadingIcon,
+  BookmarkIcon,
+} from '../../../shared/ui/icons';
 import { copyImage } from '../../../shared/lib/copy-image';
 import { MemeShare } from './MemeShare';
 import { Skeleton } from '../../../shared/ui/skeleton';
@@ -72,6 +78,7 @@ export function MemeCard({
   index,
   onTagSearch,
   onUserSearch,
+  onSave,
   manage,
   analysis,
   detailOnly = false,
@@ -81,6 +88,7 @@ export function MemeCard({
   index: number;
   onTagSearch: (tag: string) => void;
   onUserSearch: (username: string) => void;
+  onSave: () => void;
   manage?: (props: {
     content: ReactNode;
     actions: ReactNode;
@@ -208,7 +216,7 @@ export function MemeCard({
           {meme.content_type === 'image' ? (
             <div className="group relative">
               <ImagePreview meme={meme} />
-              <ImageActions meme={meme} />
+              <ImageActions meme={meme} onSave={onSave} />
             </div>
           ) : (
             <DialogTrigger asChild>
@@ -244,7 +252,12 @@ export function MemeCard({
           {manage ? (
             manage({
               content,
-              actions: <MemeShare meme={meme} />,
+              actions: (
+                <>
+                  <MemeShare meme={meme} />
+                  <SaveButton onSave={onSave} />
+                </>
+              ),
               onDeleted: () => changeOpen(false),
               onPendingChange: setBusy,
             })
@@ -253,6 +266,7 @@ export function MemeCard({
               {content}
               <DialogPanelFooter>
                 <MemeShare meme={meme} />
+                <SaveButton onSave={onSave} />
               </DialogPanelFooter>
             </div>
           )}
@@ -262,7 +276,22 @@ export function MemeCard({
   );
 }
 
-function ImageActions({ meme }: { meme: Meme }) {
+function SaveButton({ onSave }: { onSave: () => void }) {
+  return (
+    <Button
+      type="button"
+      variant="secondary"
+      size="icon-sm"
+      aria-label="Add to collection"
+      title="Add to collection"
+      onClick={onSave}
+    >
+      <BookmarkIcon aria-hidden="true" />
+    </Button>
+  );
+}
+
+function ImageActions({ meme, onSave }: { meme: Meme; onSave: () => void }) {
   const media = useMemeMedia(meme.id);
   const [state, setState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle');
   useEffect(() => {
@@ -285,7 +314,7 @@ function ImageActions({ meme }: { meme: Meme }) {
   }
   return (
     <div
-      className={`absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-end gap-1 bg-gradient-to-t from-black/80 to-transparent p-2 pt-6 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 group-has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100 ${state === 'idle' ? 'opacity-0' : 'opacity-100'}`}
+      className={`absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-end gap-1 bg-gradient-to-t from-black/80 to-transparent p-1.5 pt-6 transition-opacity [&>button]:size-6 group-hover:opacity-100 group-focus-within:opacity-100 group-has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100 ${state === 'idle' ? 'opacity-0' : 'opacity-100'}`}
     >
       <Button
         type="button"
@@ -316,6 +345,7 @@ function ImageActions({ meme }: { meme: Meme }) {
         </Button>
       </DialogTrigger>
       <MemeShare meme={meme} />
+      <SaveButton onSave={onSave} />
       {state === 'failed' && (
         <span role="alert" className="w-full text-right text-xs text-white">
           Could not copy. Try again.
