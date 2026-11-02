@@ -7,6 +7,9 @@ export type Meme = {
   created_by_name: string | null;
   created_at: string;
   content_type: 'text' | 'image';
+  analysis_status: 'not_requested' | 'queued' | 'processing' | 'completed' | 'failed';
+  width?: number | null;
+  height?: number | null;
   title: string;
   body_text: string | null;
   description: string;

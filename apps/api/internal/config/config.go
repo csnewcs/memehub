@@ -19,6 +19,10 @@ type Config struct {
 	CookieSecure                                                                bool
 	TextMaxLength                                                               int
 	OpenAIModel                                                                 string
+	OpenAIAPIKey                                                                string
+	OpenAITimeout                                                               time.Duration
+	WorkerConcurrency                                                           int
+	DeletedImageRetention, IncompleteUploadRetention                            time.Duration
 	S3Endpoint, S3PresignEndpoint, S3Region, S3Bucket, S3AccessKey, S3SecretKey string
 	S3PathStyle                                                                 bool
 	S3TTL                                                                       time.Duration
@@ -72,6 +76,41 @@ func Parse(get func(string) string) (Config, error) {
 	if c.OpenAIModel == "" {
 		return c, fmt.Errorf("OPENAI_MODEL is required to queue analysis jobs")
 	}
+	c.OpenAIAPIKey = get("OPENAI_API_KEY")
+	c.OpenAITimeout = 120 * time.Second
+	if raw := get("OPENAI_TIMEOUT_SECONDS"); raw != "" {
+		seconds, e := strconv.Atoi(raw)
+		if e != nil || seconds < 1 || seconds > 600 {
+			return c, fmt.Errorf("OPENAI_TIMEOUT_SECONDS must be between 1 and 600")
+		}
+		c.OpenAITimeout = time.Duration(seconds) * time.Second
+	}
+	c.WorkerConcurrency = 2
+	c.DeletedImageRetention = 7 * 24 * time.Hour
+	c.IncompleteUploadRetention = 24 * time.Hour
+	for _, item := range []struct {
+		key      string
+		min, max int
+		unit     time.Duration
+		target   *time.Duration
+	}{
+		{"DELETED_IMAGE_RETENTION_DAYS", 1, 365, 24 * time.Hour, &c.DeletedImageRetention},
+		{"INCOMPLETE_UPLOAD_RETENTION_HOURS", 2, 168, time.Hour, &c.IncompleteUploadRetention},
+	} {
+		if raw := get(item.key); raw != "" {
+			value, e := strconv.Atoi(raw)
+			if e != nil || value < item.min || value > item.max {
+				return c, fmt.Errorf("invalid %s", item.key)
+			}
+			*item.target = time.Duration(value) * item.unit
+		}
+	}
+	if raw := get("WORKER_CONCURRENCY"); raw != "" {
+		c.WorkerConcurrency, err = strconv.Atoi(raw)
+		if err != nil || c.WorkerConcurrency < 1 || c.WorkerConcurrency > 16 {
+			return c, fmt.Errorf("WORKER_CONCURRENCY must be between 1 and 16")
+		}
+	}
 	secure, err := strconv.ParseBool(get("SESSION_COOKIE_SECURE"))
 	if err != nil {
 		return c, fmt.Errorf("SESSION_COOKIE_SECURE must be a boolean")
@@ -96,12 +135,12 @@ func Parse(get func(string) string) (Config, error) {
 			return c, fmt.Errorf("UPLOAD_MAX_BYTES must be between 1 and 52428800")
 		}
 	}
-	c.UploadAllowedMIMEs = []string{"image/jpeg", "image/png", "image/webp"}
+	c.UploadAllowedMIMEs = []string{"image/jpeg", "image/png", "image/webp", "image/gif"}
 	if raw := get("UPLOAD_ALLOWED_MIME_TYPES"); raw != "" {
 		c.UploadAllowedMIMEs = strings.Split(raw, ",")
 	}
 	for _, value := range c.UploadAllowedMIMEs {
-		if value != "image/jpeg" && value != "image/png" && value != "image/webp" {
+		if value != "image/jpeg" && value != "image/png" && value != "image/webp" && value != "image/gif" {
 			return c, fmt.Errorf("unsupported UPLOAD_ALLOWED_MIME_TYPES")
 		}
 	}

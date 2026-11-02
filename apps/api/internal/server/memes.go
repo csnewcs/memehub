@@ -24,6 +24,7 @@ type memeInput struct {
 	MIMEType         string   `json:"mime_type"`
 	SizeBytes        int64    `json:"size_bytes"`
 	SHA256           string   `json:"sha256"`
+	AllowDuplicate   bool     `json:"allow_duplicate"`
 	Title            string   `json:"title"`
 	BodyText         string   `json:"body_text"`
 	Description      string   `json:"description"`
@@ -51,6 +52,8 @@ type Meme struct {
 	SourceNote        *string   `json:"source_note"`
 	Status            string    `json:"status"`
 	AnalysisStatus    string    `json:"analysis_status"`
+	Width             *int      `json:"width"`
+	Height            *int      `json:"height"`
 	Revision          int64     `json:"content_revision"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
@@ -60,11 +63,11 @@ type Meme struct {
 const memeColumns = `m.id,m.created_by,m.content_type,m.title,m.body_text,m.description,m.extracted_text,m.source_url,m.source_name,m.source_author,m.source_note,m.status,m.analysis_status,m.content_revision,m.created_at,m.updated_at,
  ARRAY(SELECT t.name FROM tags t JOIN meme_tags mt ON mt.tag_id=t.id WHERE mt.meme_id=m.id ORDER BY t.normalized_name),
  (SELECT u.display_name FROM users u WHERE u.id=m.created_by),
- (SELECT u.username FROM users u WHERE u.id=m.created_by)`
+ (SELECT u.username FROM users u WHERE u.id=m.created_by),m.width,m.height`
 
 func scanMeme(row pgx.Row) (Meme, error) {
 	var m Meme
-	err := row.Scan(&m.ID, &m.CreatedBy, &m.ContentType, &m.Title, &m.BodyText, &m.Description, &m.ExtractedText, &m.SourceURL, &m.SourceName, &m.SourceAuthor, &m.SourceNote, &m.Status, &m.AnalysisStatus, &m.Revision, &m.CreatedAt, &m.UpdatedAt, &m.Tags, &m.CreatedByName, &m.CreatedByUsername)
+	err := row.Scan(&m.ID, &m.CreatedBy, &m.ContentType, &m.Title, &m.BodyText, &m.Description, &m.ExtractedText, &m.SourceURL, &m.SourceName, &m.SourceAuthor, &m.SourceNote, &m.Status, &m.AnalysisStatus, &m.Revision, &m.CreatedAt, &m.UpdatedAt, &m.Tags, &m.CreatedByName, &m.CreatedByUsername, &m.Width, &m.Height)
 	return m, err
 }
 func nullable(value string) *string {
@@ -182,7 +185,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, err = tx.Exec(r.Context(), `INSERT INTO jobs(id,meme_id,type,input_revision,provider,requested_model,prompt_version)
- VALUES($1,$2,'analyze_content',0,'openai',$3,'v1')`, uuid.New(), id, s.cfg.OpenAIModel)
+ VALUES($1,$2,'analyze_content',0,'openai',COALESCE((SELECT openai_model FROM admin_settings WHERE singleton),$3),'v1')`, uuid.New(), id, s.cfg.OpenAIModel)
 	if err != nil {
 		internal(w)
 		return
@@ -316,6 +319,20 @@ func validUsername(value string) bool {
 }
 
 func (s *Server) listMemes(w http.ResponseWriter, r *http.Request) {
+	s.listMemesFiltered(w, r, "")
+}
+func (s *Server) listAdminMemes(w http.ResponseWriter, r *http.Request) {
+	if !s.adminSession(w, r, false) {
+		return
+	}
+	status := r.URL.Query().Get("analysis_status")
+	if status != "" && status != "queued" && status != "processing" && status != "failed" && status != "completed" && status != "not_requested" {
+		problem(w, 400, "invalid_analysis_status")
+		return
+	}
+	s.listMemesFiltered(w, r, status)
+}
+func (s *Server) listMemesFiltered(w http.ResponseWriter, r *http.Request, analysisStatus string) {
 	query := r.URL.Query()
 	limit := 50
 	if raw := query.Get("limit"); raw != "" {
@@ -392,7 +409,8 @@ func (s *Server) listMemes(w http.ResponseWriter, r *http.Request) {
  AND ($4::timestamptz IS NULL OR (m.created_at,m.id)<($4,$5::uuid))
  AND ($7='' OR EXISTS(SELECT 1 FROM users u WHERE u.id=m.created_by AND u.oidc_issuer=$8 AND lower(u.username)=lower($7)))
  AND ($9::uuid IS NULL OR m.created_by=$9)
- ORDER BY m.created_at DESC,m.id DESC LIMIT $6`, pattern, contentType, tags, at, id, limit+1, username, s.cfg.OIDCIssuer, mine)
+ AND ($10='' OR m.analysis_status=$10)
+ ORDER BY m.created_at DESC,m.id DESC LIMIT $6`, pattern, contentType, tags, at, id, limit+1, username, s.cfg.OIDCIssuer, mine, analysisStatus)
 	if err != nil {
 		internal(w)
 		return

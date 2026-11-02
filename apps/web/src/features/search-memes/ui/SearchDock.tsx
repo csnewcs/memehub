@@ -8,7 +8,7 @@ import {
   CommandItem,
   CommandEmpty,
 } from '../../../shared/ui/command';
-import { UserIcon, TagIcon } from '../../../shared/ui/icons';
+import { UserIcon } from '../../../shared/ui/icons';
 import { getSuggestions, type Suggestion } from '../api/suggestions';
 import { searchCompletion, applyCompletion } from '../model/completion';
 
@@ -149,13 +149,9 @@ export function SearchDock({
                   onMouseDown={(event) => event.preventDefault()}
                   onSelect={() => choose(item)}
                 >
-                  {kind === 'user' ? (
-                    <UserIcon aria-hidden="true" />
-                  ) : (
-                    <TagIcon aria-hidden="true" />
-                  )}
+                  {kind === 'user' && <UserIcon aria-hidden="true" />}
                   <span className="min-w-0 flex-1 truncate">
-                    {kind === 'user' ? `@${item.value}` : `#${item.value}`}
+                    {kind === 'user' ? `@${item.value}` : item.value}
                   </span>
                   {kind === 'user' && item.label !== item.value && (
                     <span className="max-w-28 truncate text-xs text-muted-foreground">

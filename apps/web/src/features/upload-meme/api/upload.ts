@@ -13,11 +13,18 @@ type Reservation = Meme & {
 };
 export function validateImageFile(file: File) {
   if (
-    !['image/png', 'image/jpeg', 'image/webp'].includes(file.type) ||
+    !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type) ||
     file.size === 0 ||
     file.size > 10 * 1024 * 1024
   )
-    throw new Error('Choose a JPEG, PNG, or WebP image up to 10 MB.');
+    throw new Error('Choose a JPEG, PNG, WebP, or GIF image up to 10 MB.');
+}
+
+export type UploadCheckpoint = { id?: string; uploaded?: boolean };
+export class DuplicateImageError extends Error {
+  constructor(public duplicate: { id: string; title: string }) {
+    super('This image is already in the library.');
+  }
 }
 
 export async function uploadImage(
@@ -25,43 +32,79 @@ export async function uploadImage(
   input: ImageInput,
   onProgress: (percent: number) => void,
   signal?: AbortSignal,
+  options: { checkpoint?: UploadCheckpoint; allowDuplicate?: boolean } = {},
 ) {
+  const checkpoint = options.checkpoint ?? {};
   const { file, ...metadata } = input;
   validateImageFile(file);
-  const hash = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
-  const sha256 = Array.from(new Uint8Array(hash), (byte) =>
-    byte.toString(16).padStart(2, '0'),
-  ).join('');
-  const { data } = await api.post<Reservation>(
-    'memes',
-    {
-      content_type: 'image',
-      original_filename: file.name,
-      mime_type: file.type,
-      size_bytes: file.size,
-      sha256,
-      ...metadata,
-    },
-    { signal },
-  );
-  const target = new URL(data.upload.url);
-  if (!['https:', 'http:'].includes(target.protocol) || data.upload.method !== 'PUT')
-    throw new Error('Invalid upload URL');
-  // Use a separate client so service cookies and CSRF headers never reach storage.
-  await axios.put(target.href, file, {
-    headers: data.upload.headers,
-    signal,
-    withCredentials: false,
-    onUploadProgress: (event) => {
-      if (event.total) onProgress(Math.round((event.loaded * 100) / event.total));
-    },
-  });
-  const completed = await api.post<Meme>(
-    `memes/${encodeURIComponent(data.id)}/upload-completion`,
-    undefined,
-    { signal },
-  );
-  return completed.data;
+  try {
+    if (!checkpoint.uploaded) {
+      let upload: Reservation['upload'];
+      if (checkpoint.id) {
+        const { data } = await api.post<Reservation['upload']>(
+          `memes/${encodeURIComponent(checkpoint.id)}/upload-url`,
+          undefined,
+          { signal },
+        );
+        upload = data;
+      } else {
+        const hash = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+        const sha256 = Array.from(new Uint8Array(hash), (byte) =>
+          byte.toString(16).padStart(2, '0'),
+        ).join('');
+        const { data } = await api.post<Reservation>(
+          'memes',
+          {
+            content_type: 'image',
+            original_filename: file.name,
+            mime_type: file.type,
+            size_bytes: file.size,
+            sha256,
+            ...metadata,
+            allow_duplicate: options.allowDuplicate ?? false,
+          },
+          { signal },
+        );
+        checkpoint.id = data.id;
+        upload = data.upload;
+      }
+      const target = new URL(upload.url);
+      if (!['https:', 'http:'].includes(target.protocol) || upload.method !== 'PUT')
+        throw new Error('Invalid upload URL');
+      // This client must never send service cookies or CSRF headers to storage.
+      await axios.put(target.href, file, {
+        headers: upload.headers,
+        signal,
+        withCredentials: false,
+        onUploadProgress: (event) => {
+          if (event.total) onProgress(Math.round((event.loaded * 100) / event.total));
+        },
+      });
+      checkpoint.uploaded = true;
+    }
+    onProgress(100);
+    const completed = await api.post<Meme>(
+      `memes/${encodeURIComponent(checkpoint.id!)}/upload-completion`,
+      options.allowDuplicate ? { allow_duplicate: true } : undefined,
+      { signal },
+    );
+    return completed.data;
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const body = error.response?.data;
+      if (
+        body?.error === 'duplicate_image' &&
+        typeof body.duplicate?.id === 'string' &&
+        typeof body.duplicate?.title === 'string'
+      )
+        throw new DuplicateImageError(body.duplicate);
+      if (error.response?.status === 404) {
+        delete checkpoint.id;
+        delete checkpoint.uploaded;
+      }
+    }
+    throw error;
+  }
 }
 
 export type TextInput = Omit<ImageInput, 'file'> & { body_text: string };

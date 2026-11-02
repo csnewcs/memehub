@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getSession } from '../../../entities/session';
 import { ManageMeme } from '../../../features/manage-meme';
+import { ManageAnalysis } from '../../../features/manage-analysis';
 import { CloseIcon } from '../../../shared/ui/icons';
 import { Button } from '../../../shared/ui/button';
 import { Masonry } from '../../../shared/ui/masonry';
@@ -9,10 +10,12 @@ import { apiError, useApi } from '../../../shared/api/client';
 import { formatTagToken, MemeCard, useMemeList, type ContentFilter } from '../../../entities/meme';
 import { SearchDock } from '../../../features/search-memes';
 import { UserMenu } from '../../../features/user-menu';
+import { AdminSettings } from '../../admin-settings';
 import { UploadMeme } from '../../../features/upload-meme';
 export function MemeLibrary() {
   const api = useApi();
   const session = useQuery({ queryKey: ['session'], queryFn: () => getSession(api) });
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [mine, setMine] = useState(false);
   const [tag, setTag] = useState('');
   const [query, setQuery] = useState('');
@@ -78,6 +81,11 @@ export function MemeLibrary() {
                   key={meme.id}
                   meme={meme}
                   index={i}
+                  analysis={
+                    session.data?.is_admin ? (
+                      <ManageAnalysis meme={meme} hideCompleted />
+                    ) : undefined
+                  }
                   onUserSearch={(username) => updateSearch(`@${username}`, filter)}
                   onTagSearch={(tag) => updateSearch('', filter, tag)}
                   manage={
@@ -121,6 +129,9 @@ export function MemeLibrary() {
         </div>
       </main>
 
+      {session.data?.is_admin && (
+        <AdminSettings open={settingsOpen} onOpenChange={setSettingsOpen} />
+      )}
       <div className="search-dock fixed left-1/2 z-20 flex w-[calc(100%_-_32px)] max-w-[414px] -translate-x-1/2 items-center gap-2">
         {mine && (
           <Button
@@ -142,6 +153,7 @@ export function MemeLibrary() {
         />
         <UploadMeme />
         <UserMenu
+          onSettings={() => setSettingsOpen(true)}
           mine={mine}
           onMineChange={(own) => updateSearch(query.startsWith('@') ? '' : query, filter, tag, own)}
         />

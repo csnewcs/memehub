@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type SubmitEvent } from 'react';
+import { useEffect, useRef, useState, type SubmitEvent, type ChangeEvent } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
 import { getSession } from '../../../entities/session';
@@ -15,14 +15,10 @@ import { Textarea } from '../../../shared/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '../../../shared/ui/toggle-group';
 import { Progress } from '../../../shared/ui/progress';
 import { Button } from '../../../shared/ui/button';
+import { Card, CardContent } from '../../../shared/ui/card';
 import { apiError, endpoint, useApi } from '../../../shared/api/client';
-import {
-  uploadImage,
-  createTextMeme,
-  validateImageFile,
-  type ImageInput,
-  type TextInput,
-} from '../api/upload';
+import { createTextMeme, type TextInput } from '../api/upload';
+import { useUploadQueue, type UploadMetadata } from '../model/useUploadQueue';
 
 const resumeUploadKey = 'memehub:resume-upload';
 
@@ -32,14 +28,13 @@ export function UploadMeme() {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const form = useRef<HTMLFormElement>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
   const [contentType, setContentType] = useState<'image' | 'text'>('image');
   const [bodyText, setBodyText] = useState('');
-  const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState('');
   const [dragging, setDragging] = useState(false);
   const [fileError, setFileError] = useState('');
-  const [progress, setProgress] = useState(0);
+  const queue = useUploadQueue(api, () => {
+    void cache.invalidateQueries({ queryKey: ['memes'] });
+  });
   function beginLogin() {
     const appBase = import.meta.env.PUBLIC_APP_BASE_URL;
     if (appBase && new URL(appBase).origin !== window.location.origin) {
@@ -59,7 +54,7 @@ export function UploadMeme() {
         if (!resume) beginLogin();
         return;
       }
-      mutation.reset();
+      textMutation.reset();
       setFileError('');
       setDragging(false);
       setOpen(true);
@@ -79,19 +74,8 @@ export function UploadMeme() {
     checkSession(true);
   }, [checkSession]);
 
-  useEffect(() => {
-    if (!file) {
-      setPreview('');
-      return;
-    }
-    const url = URL.createObjectURL(file);
-    setPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
-
-  const mutation = useMutation({
-    mutationFn: (input: ImageInput | TextInput) =>
-      'file' in input ? uploadImage(api, input, setProgress) : createTextMeme(api, input),
+  const textMutation = useMutation({
+    mutationFn: (input: TextInput) => createTextMeme(api, input),
     onError: (error) => {
       if (isAxiosError(error) && error.response?.status === 401) {
         setOpen(false);
@@ -101,45 +85,46 @@ export function UploadMeme() {
     onSuccess: () => {
       void cache.invalidateQueries({ queryKey: ['memes'] });
       form.current?.reset();
-      setFile(null);
       setBodyText('');
       setOpen(false);
     },
   });
-  function selectFile(next: File | undefined) {
-    if (!next || mutation.isPending) return;
-    try {
-      validateImageFile(next);
-      setFile(next);
-      setFileError('');
-      mutation.reset();
-    } catch (error) {
-      setFileError(apiError(error));
-    }
-  }
-  function submit(event: SubmitEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (contentType === 'image' && !file) {
-      setFileError('Choose an image to continue.');
-      return;
-    }
-    const data = new FormData(event.currentTarget);
-    setProgress(0);
-    const metadata = {
+  const busy = queue.running || textMutation.isPending;
+  function metadata(): UploadMetadata {
+    const data = new FormData(form.current!);
+    return {
       title: String(data.get('title') || ''),
       source_url: String(data.get('source_url') || ''),
       source_name: String(data.get('source_name') || ''),
       source_author: String(data.get('source_author') || ''),
     };
-    if (contentType === 'image' && file) mutation.mutate({ ...metadata, file });
-    else if (contentType === 'text') mutation.mutate({ ...metadata, body_text: bodyText });
   }
-  const error = fileError || (mutation.isError ? apiError(mutation.error) : '');
+  function addFiles(files: File[]) {
+    try {
+      queue.add(files);
+      setFileError('');
+    } catch (error) {
+      setFileError(apiError(error));
+    }
+  }
+  function runImages(ids?: string[], allowDuplicate = false) {
+    if (form.current?.reportValidity()) void queue.run(ids, allowDuplicate);
+  }
+  function submit(event: SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (contentType === 'text') textMutation.mutate({ ...metadata(), body_text: bodyText });
+    else runImages();
+  }
+  const done =
+    queue.items.length > 0 &&
+    queue.items.every((item) => ['completed', 'skipped'].includes(item.status));
+  const actionable = queue.items.some((item) => ['queued', 'failed'].includes(item.status));
+  const error = fileError || (textMutation.isError ? apiError(textMutation.error) : '');
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!mutation.isPending) setOpen(next);
+        if (!busy) setOpen(next);
       }}
     >
       <Button
@@ -172,38 +157,34 @@ export function UploadMeme() {
           trigger.current?.focus();
         }}
         onEscapeKeyDown={(event) => {
-          if (mutation.isPending) event.preventDefault();
+          if (busy) event.preventDefault();
         }}
         onInteractOutside={(event) => {
-          if (mutation.isPending) event.preventDefault();
+          if (busy) event.preventDefault();
         }}
       >
         <DialogPanelHeader>
-          <DialogTitle>Add a meme</DialogTitle>
+          <DialogTitle>Add memes</DialogTitle>
           <DialogDescription>Save something worth finding again.</DialogDescription>
         </DialogPanelHeader>
-        <form
-          ref={form}
-          onSubmit={submit}
-          aria-busy={mutation.isPending}
-          className="flex min-h-0 flex-col"
-        >
+        <form ref={form} onSubmit={submit} aria-busy={busy} className="flex min-h-0 flex-col">
           <DialogBody>
-            <fieldset disabled={mutation.isPending} className="space-y-5">
+            <fieldset disabled={busy} className="space-y-3">
               <ToggleGroup
                 type="single"
                 value={contentType}
                 spacing={1}
                 onValueChange={(value) => {
-                  if (value !== 'image' && value !== 'text') return;
-                  setContentType(value);
-                  setFileError('');
-                  mutation.reset();
+                  if (value === 'image' || value === 'text') {
+                    setContentType(value);
+                    setFileError('');
+                    textMutation.reset();
+                  }
                 }}
                 aria-label="Meme type"
                 variant="outline"
               >
-                <ToggleGroupItem value="image">Image</ToggleGroupItem>
+                <ToggleGroupItem value="image">Images</ToggleGroupItem>
                 <ToggleGroupItem value="text">Text</ToggleGroupItem>
               </ToggleGroup>
               {contentType === 'image' ? (
@@ -211,185 +192,280 @@ export function UploadMeme() {
                   <label
                     onDragOver={(event) => {
                       event.preventDefault();
-                      if (!mutation.isPending) setDragging(true);
+                      if (!busy) setDragging(true);
                     }}
                     onDragLeave={() => setDragging(false)}
                     onDrop={(event) => {
                       event.preventDefault();
                       setDragging(false);
-                      selectFile(event.dataTransfer.files[0]);
+                      if (!busy) addFiles(Array.from(event.dataTransfer.files));
                     }}
-                    className={`relative flex min-h-48 cursor-pointer flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed transition-colors focus-within:ring-2 focus-within:ring-ring/50 ${dragging ? 'border-ring bg-accent' : 'border-border bg-muted/30 hover:border-ring hover:bg-accent/50'} ${mutation.isPending ? 'pointer-events-none opacity-60' : ''}`}
+                    className={`flex cursor-pointer items-center gap-3 rounded-lg border border-dashed px-3 py-3 ${dragging ? 'border-ring bg-accent' : 'border-border bg-muted/30 hover:bg-accent/50'}`}
                   >
                     <Input
-                      ref={fileInput}
                       type="file"
-                      accept="image/jpeg,image/png,image/webp"
-                      aria-label={file ? 'Replace image' : 'Choose an image'}
-                      aria-describedby="upload-file-help"
-                      className="sr-only h-px w-px border-0 p-0 shadow-none"
+                      multiple
+                      accept="image/jpeg,image/png,image/webp,image/gif"
+                      aria-label="Choose images"
+                      className="sr-only"
                       onChange={(event) => {
-                        selectFile(event.target.files?.[0]);
+                        addFiles(Array.from(event.target.files ?? []));
                         event.target.value = '';
                       }}
                     />
-                    {preview ? (
-                      <img
-                        src={preview}
-                        alt="Selected meme preview"
-                        className="pointer-events-none max-h-60 w-full object-contain p-3"
-                      />
-                    ) : (
-                      <div className="pointer-events-none flex flex-col items-center px-5 py-8 text-center">
-                        <span className="mb-4 flex size-11 items-center justify-center rounded-2xl border border-border bg-muted">
-                          <ImageIcon className="size-5 text-muted-foreground" aria-hidden="true" />
-                        </span>
-                        <span className="text-sm font-medium">Drop your image here</span>
-                        <span className="mt-1 text-xs text-muted-foreground">
-                          or click to browse
-                        </span>
-                      </div>
-                    )}
+                    <ImageIcon
+                      className="size-4 shrink-0 text-muted-foreground"
+                      aria-hidden="true"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm">Drop images or browse</span>
+                      <span className="block text-xs text-muted-foreground">
+                        Up to 100 · 10 MB each
+                      </span>
+                    </span>
                   </label>
-                  <div
-                    id="upload-file-help"
-                    className="mt-2.5 flex items-center justify-between gap-3 text-[11px] text-muted-foreground"
-                  >
-                    {file ? (
-                      <>
-                        <span className="min-w-0 truncate">
-                          {file.name}{' '}
-                          <span className="text-muted-foreground">
-                            · {(file.size / 1024 / 1024).toFixed(2)} MB
-                          </span>
-                        </span>
-                        <Button
-                          variant="link"
-                          size="sm"
-                          type="button"
-                          className="h-auto p-0 text-[11px] text-muted-foreground"
-                          onClick={() => {
-                            setFile(null);
-                            setFileError('');
-                            mutation.reset();
-                            fileInput.current?.focus();
-                          }}
-                        >
-                          Remove
-                        </Button>
-                      </>
-                    ) : (
-                      <span>JPEG, PNG or WebP · Up to 10 MB</span>
-                    )}
-                  </div>
                 </div>
               ) : (
                 <label className="block text-xs text-muted-foreground">
                   Text
                   <Textarea
-                    name="body_text"
+                    className="mt-2 min-h-40"
                     value={bodyText}
-                    onChange={(event) => {
-                      setBodyText(event.target.value);
-                      mutation.reset();
-                    }}
-                    required
+                    onChange={(event) => setBodyText(event.target.value)}
                     maxLength={10000}
-                    placeholder="Write or paste your meme…"
-                    className="mt-2 min-h-48 resize-y"
+                    placeholder="Paste or write your meme"
+                    required
                   />
                 </label>
               )}
-              <label className="block text-xs text-muted-foreground">
-                Title <span className="text-muted-foreground">(optional)</span>
-                <Input className="mt-2" name="title" maxLength={200} placeholder="Give it a name" />
-              </label>
-              <details className="group rounded-2xl border border-border px-4 py-3">
-                <summary className="cursor-pointer text-xs text-muted-foreground transition hover:text-foreground">
-                  Add original source <span className="ml-1 text-muted-foreground">(optional)</span>
-                </summary>
-                <div className="mt-4 space-y-4 pb-1">
-                  <label className="block text-xs text-muted-foreground">
-                    Source URL
-                    <Input
-                      className="mt-2"
-                      type="url"
-                      onInvalid={(event) => {
-                        const details = event.currentTarget.closest('details');
-                        if (details) details.open = true;
-                      }}
-                      name="source_url"
-                      maxLength={2048}
-                      placeholder="https://"
-                    />
-                  </label>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <label className="block text-xs text-muted-foreground">
-                      Source name
-                      <Input
-                        className="mt-2"
-                        name="source_name"
-                        maxLength={200}
-                        placeholder="Website or community"
-                      />
-                    </label>
-                    <label className="block text-xs text-muted-foreground">
-                      Original creator
-                      <Input
-                        className="mt-2"
-                        name="source_author"
-                        maxLength={200}
-                        placeholder="Name or handle"
-                      />
-                    </label>
-                  </div>
-                </div>
-              </details>
+              {contentType === 'text' && <MetadataFields />}
             </fieldset>
+            {contentType === 'image' && queue.items.length > 0 && (
+              <section aria-label="Upload queue" className="mt-5 space-y-3">
+                <p role="status" className="text-xs text-muted-foreground">
+                  {queue.items.filter((item) => item.status === 'completed').length}/
+                  {queue.items.length} saved
+                </p>
+                <ul className="space-y-4">
+                  {queue.items.map((item) => (
+                    <li key={item.id}>
+                      <Card>
+                        <CardContent className="grid grid-cols-[5rem_minmax(0,1fr)] items-start gap-3 p-4 text-xs sm:grid-cols-[7rem_minmax(0,1fr)]">
+                          <UploadPreview file={item.file} />
+                          <div className="min-w-0 space-y-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="truncate font-medium">{item.file.name}</p>
+                                <p className="mt-1 text-muted-foreground">
+                                  {item.status === 'processing'
+                                    ? 'Verifying and saving…'
+                                    : item.status === 'uploading'
+                                      ? `Uploading ${item.progress}%`
+                                      : item.status === 'completed'
+                                        ? 'Saved'
+                                        : item.status}
+                                </p>
+                              </div>
+                              {!busy && item.status !== 'completed' && (
+                                <Button
+                                  type="button"
+                                  size="xs"
+                                  variant="ghost"
+                                  onClick={() => queue.remove(item.id)}
+                                >
+                                  Remove
+                                </Button>
+                              )}
+                            </div>
+                            {['uploading', 'processing'].includes(item.status) && (
+                              <Progress
+                                value={item.progress}
+                                max={100}
+                                aria-label={`Upload progress: ${item.file.name}`}
+                                className="h-1"
+                              />
+                            )}
+                            <fieldset
+                              disabled={
+                                busy ||
+                                !!item.checkpoint.id ||
+                                ['completed', 'skipped'].includes(item.status)
+                              }
+                              className="space-y-4"
+                            >
+                              <MetadataFields
+                                value={item.metadata}
+                                onChange={(metadata) => queue.setMetadata(item.id, metadata)}
+                              />
+                            </fieldset>
+                            {item.checkpoint.id &&
+                              !['completed', 'skipped'].includes(item.status) && (
+                                <p className="text-muted-foreground">
+                                  Metadata is saved. Retry keeps these values.
+                                </p>
+                              )}
+                            {item.error && (
+                              <p role="alert" className="text-destructive">
+                                {item.error}
+                              </p>
+                            )}
+                            {item.duplicate && (
+                              <p className="text-muted-foreground">
+                                Existing: {item.duplicate.title || 'Untitled image'}
+                              </p>
+                            )}
+                            {item.status === 'duplicate' && (
+                              <div className="flex gap-2">
+                                <Button
+                                  type="button"
+                                  size="xs"
+                                  variant="secondary"
+                                  disabled={busy}
+                                  onClick={() => runImages([item.id], true)}
+                                >
+                                  Upload anyway
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="xs"
+                                  variant="ghost"
+                                  disabled={busy}
+                                  onClick={() => queue.skip(item.id)}
+                                >
+                                  Skip
+                                </Button>
+                              </div>
+                            )}
+                            {item.status === 'failed' && (
+                              <Button
+                                type="button"
+                                size="xs"
+                                variant="secondary"
+                                disabled={busy}
+                                onClick={() => runImages([item.id])}
+                              >
+                                Retry
+                              </Button>
+                            )}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
             {error && (
-              <p
-                role="alert"
-                className="my-4 rounded-xl border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-xs leading-relaxed text-destructive"
-              >
+              <p role="alert" className="my-4 text-xs text-destructive">
                 {error}
               </p>
             )}
-            {mutation.isPending && contentType === 'image' && (
-              <div className="my-4">
-                <div
-                  role="status"
-                  className="mb-2 flex justify-between text-xs text-muted-foreground"
-                >
-                  <span>{progress < 100 ? 'Uploading image…' : 'Verifying and saving…'}</span>
-                  <span>{progress}%</span>
-                </div>
-                <Progress
-                  aria-label="Image upload progress"
-                  value={progress}
-                  max={100}
-                  className="h-1"
-                />
-              </div>
-            )}
           </DialogBody>
           <DialogPanelFooter>
-            <Button
-              type="submit"
-              disabled={mutation.isPending || (contentType === 'image' ? !file : !bodyText.trim())}
-            >
-              {mutation.isPending ? (
-                <LoadingIcon
-                  className="animate-spin motion-reduce:animate-none"
-                  aria-hidden="true"
-                />
-              ) : (
-                <ArrowUpIcon aria-hidden="true" />
-              )}
-              {mutation.isPending ? 'Saving…' : 'Save meme'}
-            </Button>
+            {contentType === 'image' && done ? (
+              <Button
+                type="button"
+                onClick={() => {
+                  queue.reset();
+                  form.current?.reset();
+                  setOpen(false);
+                }}
+              >
+                Done
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                disabled={busy || (contentType === 'image' ? !actionable : !bodyText.trim())}
+              >
+                {busy ? (
+                  <LoadingIcon
+                    className="animate-spin motion-reduce:animate-none"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <ArrowUpIcon aria-hidden="true" />
+                )}
+                {busy ? 'Saving…' : contentType === 'image' ? 'Save / retry images' : 'Save text'}
+              </Button>
+            )}
           </DialogPanelFooter>
         </form>
       </DialogPanel>
     </Dialog>
+  );
+}
+
+function MetadataFields({
+  value,
+  onChange,
+}: {
+  value?: UploadMetadata;
+  onChange?: (value: UploadMetadata) => void;
+}) {
+  function field(key: keyof UploadMetadata) {
+    return value
+      ? {
+          value: value[key],
+          onChange: (event: ChangeEvent<HTMLInputElement>) =>
+            onChange?.({ ...value, [key]: event.target.value }),
+        }
+      : { name: key };
+  }
+  return (
+    <>
+      <label className="block text-xs text-muted-foreground">
+        Title (optional)
+        <Input className="mt-2" {...field('title')} maxLength={200} placeholder="Give it a name" />
+      </label>
+      <details>
+        <summary className="cursor-pointer text-xs text-muted-foreground">
+          Add original source (optional)
+        </summary>
+        <div className="mt-4 space-y-4">
+          <label className="block text-xs text-muted-foreground">
+            Source URL
+            <Input
+              className="mt-2"
+              type="url"
+              {...field('source_url')}
+              maxLength={2048}
+              placeholder="https://"
+              onInvalid={(event) => {
+                const details = event.currentTarget.closest('details');
+                if (details) details.open = true;
+              }}
+            />
+          </label>
+          <label className="block text-xs text-muted-foreground">
+            Source name
+            <Input className="mt-2" {...field('source_name')} maxLength={200} />
+          </label>
+          <label className="block text-xs text-muted-foreground">
+            Original creator
+            <Input className="mt-2" {...field('source_author')} maxLength={200} />
+          </label>
+        </div>
+      </details>
+    </>
+  );
+}
+
+function UploadPreview({ file }: { file: File }) {
+  const [url, setUrl] = useState<string>();
+  useEffect(() => {
+    if (!file.type.startsWith('image/')) return;
+    const objectURL = URL.createObjectURL(file);
+    setUrl(objectURL);
+    return () => URL.revokeObjectURL(objectURL);
+  }, [file]);
+  return (
+    <div className="flex aspect-square items-center justify-center overflow-hidden rounded-md bg-muted/30">
+      {url ? (
+        <img src={url} alt={`Preview: ${file.name}`} className="size-full object-contain" />
+      ) : (
+        <ImageIcon className="size-5 text-muted-foreground" aria-hidden="true" />
+      )}
+    </div>
   );
 }

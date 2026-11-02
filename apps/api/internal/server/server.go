@@ -60,6 +60,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/memes/{id}/upload-url", s.renewUpload)
 	mux.HandleFunc("POST /api/memes/{id}/upload-completion", s.completeUpload)
 	mux.HandleFunc("GET /api/memes/{id}/media", s.media)
+	mux.HandleFunc("GET /api/admin/memes", s.listAdminMemes)
+	mux.HandleFunc("GET /api/admin/users", s.listUsers)
+	mux.HandleFunc("GET /api/admin/settings", s.readSettings)
+	mux.HandleFunc("PUT /api/admin/settings", s.updateSettings)
+	mux.HandleFunc("GET /api/admin/memes/{id}/analyses", s.listAnalyses)
+	mux.HandleFunc("POST /api/admin/memes/{id}/analyses", s.retryAnalysis)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Cache-Control", "no-store")

@@ -1,4 +1,9 @@
 export {
+  HiOutlineDuplicate as CopyIcon,
+  HiOutlineInformationCircle as DetailsIcon,
+  HiOutlineChevronDown as ChevronDownIcon,
+  HiOutlineChevronUp as ChevronUpIcon,
+  HiOutlineCog as SettingsIcon,
   HiOutlineArrowUp as ArrowUpIcon,
   HiOutlinePhotograph as ImageIcon,
   HiOutlineRefresh as LoadingIcon,

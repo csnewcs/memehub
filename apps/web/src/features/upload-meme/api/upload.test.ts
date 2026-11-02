@@ -143,3 +143,159 @@ describe('text memes', () => {
     expect(adapter).not.toHaveBeenCalled();
   });
 });
+
+describe('upload recovery', () => {
+  const input = () => ({
+    file: new File(['bytes'], 'm.png', { type: 'image/png' }),
+    title: '',
+    source_url: '',
+    source_name: '',
+    source_author: '',
+  });
+  it('renews the same reservation after a failed PUT and skips PUT after completion failure', async () => {
+    const api = createApi('/api');
+    const calls: string[] = [];
+    let completeAttempts = 0;
+    const upload = { url: 'https://storage.example/staging', method: 'PUT', headers: {} };
+    api.defaults.adapter = async (config) => {
+      calls.push(config.url!);
+      if (config.url?.endsWith('/upload-completion') && completeAttempts++ === 0)
+        throw new Error('completion failed');
+      return {
+        config,
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        data:
+          config.url === 'memes'
+            ? { id: 'saved', upload }
+            : config.url?.endsWith('/upload-url')
+              ? upload
+              : { id: 'saved' },
+      };
+    };
+    const put = vi
+      .spyOn(axios, 'put')
+      .mockRejectedValueOnce(new Error('put failed'))
+      .mockResolvedValue({ data: null });
+    const checkpoint = {};
+    const file = input();
+    await expect(uploadImage(api, file, () => {}, undefined, { checkpoint })).rejects.toThrow(
+      'put failed',
+    );
+    await expect(uploadImage(api, file, () => {}, undefined, { checkpoint })).rejects.toThrow(
+      'completion failed',
+    );
+    await expect(uploadImage(api, file, () => {}, undefined, { checkpoint })).resolves.toEqual({
+      id: 'saved',
+    });
+    expect(put).toHaveBeenCalledTimes(2);
+    expect(calls).toEqual([
+      'memes',
+      'memes/saved/upload-url',
+      'memes/saved/upload-completion',
+      'memes/saved/upload-completion',
+    ]);
+  });
+  it('sends explicit duplicate approval to reservation and completion', async () => {
+    const api = createApi('/api');
+    api.defaults.adapter = async (config) => {
+      expect(JSON.parse(config.data).allow_duplicate).toBe(true);
+      return {
+        config,
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        data: {
+          id: 'saved',
+          upload: { url: 'https://storage.example/staging', method: 'PUT', headers: {} },
+        },
+      };
+    };
+    vi.spyOn(axios, 'put').mockResolvedValue({ data: null });
+    await uploadImage(api, input(), () => {}, undefined, { allowDuplicate: true });
+  });
+  it('returns duplicate details for a confirmation choice', async () => {
+    const api = createApi('/api');
+    api.defaults.adapter = async (config) => {
+      throw new axios.AxiosError('duplicate', 'ERR_BAD_REQUEST', config, undefined, {
+        config,
+        status: 409,
+        statusText: 'Conflict',
+        headers: {},
+        data: { error: 'duplicate_image', duplicate: { id: 'existing', title: 'Existing' } },
+      });
+    };
+    await expect(uploadImage(api, input(), () => {})).rejects.toMatchObject({
+      duplicate: { id: 'existing', title: 'Existing' },
+    });
+  });
+});
+
+describe('per-image metadata', () => {
+  it('keeps each image title and source separate through a retry', async () => {
+    const api = createApi('/api');
+    const saved: Record<string, Record<string, string>> = {};
+    let sequence = 0;
+    let failCompletion = true;
+    api.defaults.adapter = async (config) => {
+      if (config.url === 'memes') {
+        const id = `image-${++sequence}`;
+        saved[id] = JSON.parse(config.data);
+        return {
+          config,
+          status: 201,
+          statusText: 'Created',
+          headers: {},
+          data: {
+            id,
+            upload: { url: `https://storage.example/${id}`, method: 'PUT', headers: {} },
+          },
+        };
+      }
+      if (config.url === 'memes/image-1/upload-completion' && failCompletion) {
+        failCompletion = false;
+        throw new Error('temporary failure');
+      }
+      return {
+        config,
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        data: { id: config.url?.split('/')[1] },
+      };
+    };
+    vi.spyOn(axios, 'put').mockResolvedValue({ data: null });
+    const first = {
+      file: new File(['spring'], 'spring.png', { type: 'image/png' }),
+      title: 'Spring',
+      source_url: 'https://example.com/spring',
+      source_name: 'Spring source',
+      source_author: 'Alice',
+    };
+    const second = {
+      file: new File(['may'], 'may.png', { type: 'image/png' }),
+      title: 'May',
+      source_url: 'https://example.com/may',
+      source_name: 'May source',
+      source_author: 'Bob',
+    };
+    const checkpoint = {};
+    await expect(uploadImage(api, first, () => {}, undefined, { checkpoint })).rejects.toThrow(
+      'temporary failure',
+    );
+    await uploadImage(api, second, () => {});
+    await uploadImage(api, first, () => {}, undefined, { checkpoint });
+    expect(sequence).toBe(2);
+    expect(saved['image-1']).toMatchObject({
+      title: 'Spring',
+      source_author: 'Alice',
+      source_url: first.source_url,
+    });
+    expect(saved['image-2']).toMatchObject({
+      title: 'May',
+      source_author: 'Bob',
+      source_url: second.source_url,
+    });
+  });
+});

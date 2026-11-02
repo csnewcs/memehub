@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getSession, logoutSession } from '../../../entities/session';
 import { apiError, endpoint, useApi } from '../../../shared/api/client';
 import { Button } from '../../../shared/ui/button';
-import { LoginIcon, LogoutIcon, UserIcon } from '../../../shared/ui/icons';
+import { LoginIcon, LogoutIcon, UserIcon, SettingsIcon } from '../../../shared/ui/icons';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,8 +14,10 @@ import {
 export function UserMenu({
   mine,
   onMineChange,
+  onSettings,
 }: {
   mine: boolean;
+  onSettings: () => void;
   onMineChange: (mine: boolean) => void;
 }) {
   const api = useApi();
@@ -80,6 +82,11 @@ export function UserMenu({
               >
                 My memes
               </DropdownMenuItem>
+              {session.data.is_admin && (
+                <DropdownMenuItem onSelect={onSettings}>
+                  <SettingsIcon aria-hidden="true" /> Settings
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onSelect={() => logout.mutate()}>
                 <LogoutIcon aria-hidden="true" /> Sign out
               </DropdownMenuItem>

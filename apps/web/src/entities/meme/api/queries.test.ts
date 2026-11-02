@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, it, vi } from 'vite-plus/test';
+import { focusManager, QueryClient, QueryObserver } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
 import { createApi } from '../../../shared/api/client';
-import { listMemes, getMedia } from './queries';
+import { listMemes, getMedia, memeMediaOptions, type Media } from './queries';
 
 describe('meme queries', () => {
   it('sends filters, cursor and cancellation through Axios', async () => {
@@ -99,5 +100,58 @@ describe('meme queries', () => {
       data: { original: { url: 'javascript:alert(1)', expires_at: new Date().toISOString() } },
     });
     await expect(getMedia(api, 'image')).rejects.toThrow('Invalid image URL');
+  });
+});
+
+describe('media URL lifetime', () => {
+  it('reuses valid URLs on focus and remount, then refreshes before expiry', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-02T03:00:00Z'));
+    const api = createApi('/api');
+    let calls = 0;
+    api.defaults.adapter = async (config) => {
+      calls++;
+      const image = {
+        url: `https://images.example.test/preview.webp?signature=${calls}`,
+        expires_at: new Date(Date.now() + 90_000).toISOString(),
+      };
+      return {
+        config,
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        data: { original: image, thumbnail: image },
+      };
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.mount();
+    let unsubscribe = () => {};
+    try {
+      const options = memeMediaOptions(api, 'image');
+      let observer = new QueryObserver(client, options);
+      unsubscribe = observer.subscribe(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toBe(1);
+      unsubscribe();
+      observer = new QueryObserver(client, options);
+      unsubscribe = observer.subscribe(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toBe(1);
+      await vi.advanceTimersByTimeAsync(61_000);
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toBe(2);
+      expect(client.getQueryData<Media>(options.queryKey)?.thumbnail.url).toContain('signature=2');
+    } finally {
+      unsubscribe();
+      client.unmount();
+      client.clear();
+      focusManager.setFocused(undefined);
+      vi.useRealTimers();
+    }
   });
 });

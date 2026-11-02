@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"image"
+	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
 	"io"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/noeulnight/memehub/apps/api/internal/preview"
 	"github.com/noeulnight/memehub/apps/api/internal/storage"
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
@@ -55,8 +57,18 @@ func (s *Server) reserveImage(w http.ResponseWriter, r *http.Request, sess sessi
 		return
 	}
 	defer tx.Rollback(r.Context())
-	_, err = tx.Exec(r.Context(), `INSERT INTO memes(id,created_by,content_type,title,description,source_url,source_name,source_author,source_note,original_filename,original_object_key,mime_type,size_bytes,sha256,status)
- VALUES($1,$2,'image',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'uploading')`, id, sess.UserID, in.Title, in.Description, nullable(in.SourceURL), nullable(in.SourceName), nullable(in.SourceAuthor), nullable(in.SourceNote), in.OriginalFilename, "originals/"+id.String(), in.MIMEType, in.SizeBytes, in.SHA256)
+	if !in.AllowDuplicate {
+		found, e := duplicateImage(r.Context(), tx, w, in.SHA256, id)
+		if e != nil {
+			internal(w)
+			return
+		}
+		if found {
+			return
+		}
+	}
+	_, err = tx.Exec(r.Context(), `INSERT INTO memes(id,created_by,content_type,title,description,source_url,source_name,source_author,source_note,original_filename,original_object_key,mime_type,size_bytes,sha256,status,allow_duplicate)
+ VALUES($1,$2,'image',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'uploading',$14)`, id, sess.UserID, in.Title, in.Description, nullable(in.SourceURL), nullable(in.SourceName), nullable(in.SourceAuthor), nullable(in.SourceNote), in.OriginalFilename, "originals/"+id.String(), in.MIMEType, in.SizeBytes, in.SHA256, in.AllowDuplicate)
 	if err != nil {
 		internal(w)
 		return
@@ -92,7 +104,7 @@ func (s *Server) renewUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	var state, mime string
 	var size int64
-	err = s.db.QueryRow(r.Context(), "SELECT status,mime_type,size_bytes FROM memes WHERE id=$1 AND created_by=$2 AND content_type='image' AND deleted_at IS NULL", id, sess.UserID).Scan(&state, &mime, &size)
+	err = s.db.QueryRow(r.Context(), "UPDATE memes SET updated_at=now() WHERE id=$1 AND created_by=$2 AND content_type='image' AND deleted_at IS NULL AND objects_deleted_at IS NULL RETURNING status,mime_type,size_bytes", id, sess.UserID).Scan(&state, &mime, &size)
 	if errors.Is(err, pgx.ErrNoRows) {
 		problem(w, 404, "meme_not_found")
 		return
@@ -171,7 +183,14 @@ func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var state, mime, hash, key string
 	var size int64
-	err = tx.QueryRow(r.Context(), `SELECT status,mime_type,sha256,size_bytes,original_object_key FROM memes WHERE id=$1 AND created_by=$2 AND content_type='image' AND deleted_at IS NULL FOR UPDATE`, id, sess.UserID).Scan(&state, &mime, &hash, &size, &key)
+	var allowDuplicate bool
+	var input struct {
+		AllowDuplicate bool `json:"allow_duplicate"`
+	}
+	if r.ContentLength != 0 && !decodeJSON(w, r, &input) {
+		return
+	}
+	err = tx.QueryRow(r.Context(), `SELECT status,mime_type,sha256,size_bytes,original_object_key,allow_duplicate FROM memes WHERE id=$1 AND created_by=$2 AND content_type='image' AND deleted_at IS NULL FOR UPDATE`, id, sess.UserID).Scan(&state, &mime, &hash, &size, &key, &allowDuplicate)
 	if errors.Is(err, pgx.ErrNoRows) {
 		problem(w, 404, "meme_not_found")
 		return
@@ -206,6 +225,20 @@ func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Read staging once and write the verified bytes to a key never signed for upload.
+		if _, e = tx.Exec(r.Context(), "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", hash); e != nil {
+			internal(w)
+			return
+		}
+		if !allowDuplicate && !input.AllowDuplicate {
+			found, e := duplicateImage(r.Context(), tx, w, hash, id)
+			if e != nil {
+				internal(w)
+				return
+			}
+			if found {
+				return
+			}
+		}
 		thumbKey := "thumbnails/" + id.String() + ".png"
 		if e = s.store.Put(r.Context(), key, mime, data); e != nil {
 			problem(w, 502, "storage_unavailable")
@@ -215,12 +248,26 @@ func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 			problem(w, 502, "storage_unavailable")
 			return
 		}
-		_, err = tx.Exec(r.Context(), `UPDATE memes SET width=$2,height=$3,thumbnail_object_key=$4,status='ready',analysis_status='queued',updated_at=now() WHERE id=$1`, id, width, height, thumbKey)
+		var previewKey *string
+		if mime == "image/gif" {
+			animated, e := preview.Animated(r.Context(), data)
+			if e != nil {
+				problem(w, 502, "preview_generation_failed")
+				return
+			}
+			value := "previews/" + id.String() + ".webp"
+			if e = s.store.Put(r.Context(), value, "image/webp", animated); e != nil {
+				problem(w, 502, "storage_unavailable")
+				return
+			}
+			previewKey = &value
+		}
+		_, err = tx.Exec(r.Context(), `UPDATE memes SET width=$2,height=$3,thumbnail_object_key=$4,preview_object_key=$5,status='ready',analysis_status='queued',updated_at=now() WHERE id=$1`, id, width, height, thumbKey, previewKey)
 		if err != nil {
 			internal(w)
 			return
 		}
-		_, err = tx.Exec(r.Context(), `INSERT INTO jobs(id,meme_id,type,input_revision,provider,requested_model,prompt_version) VALUES($1,$2,'analyze_content',0,'openai',$3,'v1')`, uuid.New(), id, s.cfg.OpenAIModel)
+		_, err = tx.Exec(r.Context(), `INSERT INTO jobs(id,meme_id,type,input_revision,provider,requested_model,prompt_version) VALUES($1,$2,'analyze_content',0,'openai',COALESCE((SELECT openai_model FROM admin_settings WHERE singleton),$3),'v1')`, uuid.New(), id, s.cfg.OpenAIModel)
 		if err != nil {
 			internal(w)
 			return
@@ -246,7 +293,8 @@ func (s *Server) media(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var original, thumbnail string
-	err = s.db.QueryRow(r.Context(), `SELECT original_object_key,thumbnail_object_key FROM memes WHERE id=$1 AND content_type='image' AND status='ready' AND deleted_at IS NULL`, id).Scan(&original, &thumbnail)
+	// Older GIFs use their original until an animated WebP preview is available.
+	err = s.db.QueryRow(r.Context(), `SELECT original_object_key,COALESCE(preview_object_key,CASE WHEN mime_type='image/gif' THEN original_object_key ELSE thumbnail_object_key END) FROM memes WHERE id=$1 AND content_type='image' AND status='ready' AND deleted_at IS NULL`, id).Scan(&original, &thumbnail)
 	if errors.Is(err, pgx.ErrNoRows) {
 		problem(w, 404, "meme_not_found")
 		return

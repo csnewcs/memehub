@@ -9,11 +9,15 @@ import (
 	"encoding/json"
 	"hash/crc32"
 	"image"
+	"image/color"
+	"image/gif"
 	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +25,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/google/uuid"
 	"github.com/noeulnight/memehub/apps/api/internal/config"
 	"github.com/noeulnight/memehub/apps/api/internal/storage"
 )
@@ -67,6 +72,24 @@ func TestPrepareImage(t *testing.T) {
 				t.Fatal("invalid image accepted")
 			}
 		})
+	}
+}
+
+func TestPrepareAnimatedGIF(t *testing.T) {
+	palette := color.Palette{color.Transparent, color.White}
+	frames := []*image.Paletted{image.NewPaletted(image.Rect(0, 0, 100, 100), palette), image.NewPaletted(image.Rect(0, 0, 100, 100), palette)}
+	frames[1].SetColorIndex(1, 1, 1)
+	var encoded bytes.Buffer
+	if err := gif.EncodeAll(&encoded, &gif.GIF{Image: frames, Delay: []int{10, 10}}); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(encoded.Bytes())
+	width, height, thumbnail, err := prepareImage(encoded.Bytes(), "image/gif", hex.EncodeToString(sum[:]), int64(encoded.Len()))
+	if err != nil || width != 100 || height != 100 {
+		t.Fatalf("GIF preparation: %v", err)
+	}
+	if _, err := png.Decode(bytes.NewReader(thumbnail)); err != nil {
+		t.Fatalf("GIF analysis preview must be PNG: %v", err)
 	}
 }
 func TestImageLifecycle(t *testing.T) {
@@ -143,10 +166,44 @@ func TestImageLifecycle(t *testing.T) {
 	corrupt[len(corrupt)-1] ^= 1
 	put(corrupt)
 	mustStatus(t, request(t, h, "POST", path+"/upload-completion", nil, cookies, csrf), 422)
+	// Two reservations can exist before either image is ready.
+	pending := request(t, h, "POST", "/api/memes", input, cookies, csrf)
+	mustStatus(t, pending, 201)
+	var pendingMeme Meme
+	if err = json.Unmarshal(pending.Body.Bytes(), &pendingMeme); err != nil {
+		t.Fatal(err)
+	}
+	if err = app.store.Put(context.Background(), stagingKey(pendingMeme.ID), "image/png", data); err != nil {
+		t.Fatal(err)
+	}
 	put(data)
 	mustStatus(t, request(t, h, "POST", path+"/upload-completion", nil, cookies, csrf), 200)
+	pendingPath := "/api/memes/" + pendingMeme.ID.String()
+	mustStatus(t, request(t, h, "POST", pendingPath+"/upload-completion", nil, cookies, csrf), 409)
+	mustStatus(t, request(t, h, "POST", pendingPath+"/upload-completion", map[string]bool{"allow_duplicate": true}, cookies, csrf), 200)
+	mustStatus(t, request(t, h, "DELETE", pendingPath, nil, cookies, csrf), 204)
+
 	mustStatus(t, request(t, h, "POST", path+"/upload-completion", nil, cookies, csrf), 200)
 	mustStatus(t, request(t, h, "POST", path+"/upload-url", nil, cookies, csrf), 409)
+	// A ready image blocks the same bytes unless the uploader explicitly confirms.
+	mustStatus(t, request(t, h, "POST", "/api/memes", input, cookies, csrf), 409)
+	input["allow_duplicate"] = true
+	allowed := request(t, h, "POST", "/api/memes", input, cookies, csrf)
+	mustStatus(t, allowed, 201)
+	var duplicate struct {
+		ID uuid.UUID `json:"id"`
+	}
+	if err = json.Unmarshal(allowed.Body.Bytes(), &duplicate); err != nil {
+		t.Fatal(err)
+	}
+	if err = app.store.Put(context.Background(), stagingKey(duplicate.ID), "image/png", data); err != nil {
+		t.Fatal(err)
+	}
+	duplicatePath := "/api/memes/" + duplicate.ID.String()
+	mustStatus(t, request(t, h, "POST", duplicatePath+"/upload-completion", nil, cookies, csrf), 200)
+	mustStatus(t, request(t, h, "DELETE", duplicatePath, nil, cookies, csrf), 204)
+	delete(input, "allow_duplicate")
+
 	mustStatus(t, request(t, h, "GET", path, nil, nil, ""), 200)
 	after := request(t, h, "GET", "/api/memes?content_type=image&q=Image", nil, nil, "")
 	mustStatus(t, after, 200)
@@ -221,4 +278,76 @@ func fakeObjectStore(t *testing.T) string {
 	}))
 	t.Cleanup(server.Close)
 	return server.URL
+}
+
+func TestGIFCompletionPublishesAnimatedPreview(t *testing.T) {
+	if _, err := exec.LookPath("gif2webp"); err != nil {
+		t.Skip("libwebp gif2webp is not installed")
+	}
+	pool := testPool(t)
+	issuer := newIssuer(t)
+	endpoint := fakeObjectStore(t)
+	cfg := config.Config{AppBaseURL: "http://localhost:4321", OIDCIssuer: issuer.server.URL, OIDCClientID: "test-client", SessionTTL: time.Hour, OpenAIModel: "test-model", S3Endpoint: endpoint, S3PresignEndpoint: endpoint, S3Region: "us-east-1", S3Bucket: "gif-test", S3AccessKey: "test", S3SecretKey: "test-secret", S3PathStyle: true, S3TTL: time.Minute, UploadMaxBytes: 10 << 20, UploadAllowedMIMEs: []string{"image/gif"}}
+	app, err := New(context.Background(), cfg, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := app.Handler()
+	cookies, csrf := signIn(t, h, issuer, "author", false)
+	palette := color.Palette{color.Transparent, color.White}
+	frames := []*image.Paletted{image.NewPaletted(image.Rect(0, 0, 100, 100), palette), image.NewPaletted(image.Rect(0, 0, 100, 100), palette)}
+	frames[1].SetColorIndex(1, 1, 1)
+	var encoded bytes.Buffer
+	if err = gif.EncodeAll(&encoded, &gif.GIF{Image: frames, Delay: []int{10, 10}}); err != nil {
+		t.Fatal(err)
+	}
+	data := encoded.Bytes()
+	sum := sha256.Sum256(data)
+	created := request(t, h, "POST", "/api/memes", map[string]any{"content_type": "image", "original_filename": "cat.gif", "mime_type": "image/gif", "size_bytes": len(data), "sha256": hex.EncodeToString(sum[:])}, cookies, csrf)
+	mustStatus(t, created, 201)
+	var reservation struct {
+		ID string `json:"id"`
+	}
+	if err = json.Unmarshal(created.Body.Bytes(), &reservation); err != nil {
+		t.Fatal(err)
+	}
+	if err = app.store.Put(context.Background(), "staging/"+reservation.ID, "image/gif", data); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/memes/" + reservation.ID
+	mustStatus(t, request(t, h, "POST", path+"/upload-completion", nil, cookies, csrf), 200)
+	var staticKey, previewKey, originalKey string
+	if err = pool.QueryRow(context.Background(), "SELECT thumbnail_object_key,preview_object_key,original_object_key FROM memes WHERE id=$1", reservation.ID).Scan(&staticKey, &previewKey, &originalKey); err != nil {
+		t.Fatal(err)
+	}
+	if staticKey == previewKey || !strings.HasSuffix(previewKey, ".webp") {
+		t.Fatal("static analysis image must remain separate")
+	}
+	media := request(t, h, "GET", path+"/media", nil, nil, "")
+	mustStatus(t, media, 200)
+	var urls struct{ Original, Thumbnail storage.SignedURL }
+	if err = json.Unmarshal(media.Body.Bytes(), &urls); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range []struct {
+		url       string
+		isPreview bool
+	}{{urls.Original.URL, false}, {urls.Thumbnail.URL, true}} {
+		response, e := http.Get(entry.url)
+		if e != nil {
+			t.Fatal(e)
+		}
+		body, e := io.ReadAll(response.Body)
+		response.Body.Close()
+		if e != nil {
+			t.Fatal(e)
+		}
+		if entry.isPreview {
+			if !bytes.Contains(body, []byte("ANIM")) {
+				t.Fatal("animated gallery preview missing")
+			}
+		} else if !bytes.Equal(body, data) {
+			t.Fatal("GIF original was changed")
+		}
+	}
 }

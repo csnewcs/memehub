@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { queryOptions, useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { AxiosInstance } from 'axios';
 import { useApi } from '../../../shared/api/client';
 import { parseMemeSearch } from '../model/search';
@@ -47,6 +47,12 @@ export function useMemeList(
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) => listMemes(api, query, filter, pageParam, signal, tag, mine),
     getNextPageParam: (page) => page.next_cursor ?? undefined,
+    refetchInterval: (query) =>
+      query.state.data?.pages.some((page) =>
+        page.items.some((meme) => ['queued', 'processing'].includes(meme.analysis_status)),
+      )
+        ? 5_000
+        : false,
   });
 }
 export type Media = {
@@ -69,15 +75,27 @@ export async function getMedia(
   }
   return data;
 }
-export function useMemeMedia(id: string) {
-  const api = useApi();
-  return useQuery({
+export function memeMediaOptions(api: AxiosInstance, id: string) {
+  return queryOptions({
     queryKey: ['meme-media', id],
     queryFn: ({ signal }) => getMedia(api, id, signal),
-    staleTime: 0,
+    staleTime: (query) => Math.max(0, mediaRefreshAt(query.state.data) - query.state.dataUpdatedAt),
     refetchInterval: (query) => {
-      const expires = query.state.data?.thumbnail.expires_at;
-      return expires ? Math.max(1_000, Date.parse(expires) - Date.now() - 30_000) : false;
+      return query.state.data
+        ? Math.max(1_000, mediaRefreshAt(query.state.data) - Date.now())
+        : false;
     },
   });
+}
+
+function mediaRefreshAt(media: Media | undefined) {
+  return media
+    ? Math.min(Date.parse(media.original.expires_at), Date.parse(media.thumbnail.expires_at)) -
+        30_000
+    : 0;
+}
+
+export function useMemeMedia(id: string) {
+  const api = useApi();
+  return useQuery(memeMediaOptions(api, id));
 }
