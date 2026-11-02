@@ -132,6 +132,146 @@ button:disabled {
 .meme-card {
   animation: arrive 240ms ease-out both;
 }
+.meme-hover {
+  --meme-actions-scale: 1;
+}
+.meme-hover[data-hovered='true'] {
+  --meme-actions-scale: var(--meme-hover-scale, 1.5);
+}
+.meme-visual {
+  transform-origin: center;
+  transform: translate(0, 0) scale(1);
+  scale: 1;
+  transition:
+    transform 180ms cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 180ms ease-out,
+    scale 150ms ease-out,
+    filter 150ms ease-out;
+}
+.meme-hover-actions {
+  transform: translate(0, 0) scale(1);
+  transform-origin: center;
+  opacity: 0;
+  transition:
+    transform 180ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 180ms ease-out;
+}
+.meme-hover[data-hovered='true'] .meme-visual,
+.meme-hover[data-hovered='true'] .meme-hover-actions {
+  transform: translate(var(--meme-hover-x, 0px), var(--meme-hover-y, 0px))
+    scale(var(--meme-hover-scale, 1.5));
+  transform-origin: center;
+}
+.meme-hover[data-hovered='true'] .meme-hover-actions {
+  opacity: 1;
+  transition-duration: 220ms, 180ms;
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1), ease-out;
+}
+.meme-hover[data-hovered='false'] .meme-hover-actions * {
+  pointer-events: none !important;
+}
+.meme-hover-actions:has(.meme-copy-feedback) {
+  opacity: 1;
+}
+.meme-hover[data-hovered='true'] .meme-visual {
+  transition-duration: 220ms, 220ms, 150ms, 150ms;
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1), ease-out, ease-out, ease-out;
+  box-shadow:
+    0 20px 25px -5px rgb(0 0 0 / 25%),
+    0 8px 10px -6px rgb(0 0 0 / 25%);
+}
+.meme-hover[data-pressed='true'] .meme-visual {
+  scale: 0.95;
+}
+.meme-hover[data-hovered='true'][data-pressed='true'] .meme-visual {
+  filter: brightness(0.9);
+}
+.meme-hover-actions .meme-options {
+  scale: calc(1 / var(--meme-hover-scale, 1.5));
+}
+.meme-hover-actions .meme-copy-label {
+  scale: calc(1 / var(--meme-actions-scale, 1));
+  transition: scale 180ms ease-out;
+}
+.meme-options {
+  transform-origin: center;
+  animation: meme-options-reveal 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.meme-options-overlay {
+  animation: meme-options-dim 180ms ease-out both;
+}
+.meme-options-overlay[data-closing='true'] {
+  animation: meme-options-dismiss 180ms ease-out both;
+}
+.meme-options-overlay[data-closing='true'] .meme-options {
+  animation: meme-options-retreat 180ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+@keyframes meme-options-dismiss {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes meme-options-retreat {
+  from {
+    transform: scale(1);
+  }
+  to {
+    transform: scale(0.9);
+  }
+}
+.meme-copy-feedback {
+  animation: meme-copy-confirm 1200ms ease-in-out both;
+}
+@keyframes meme-copy-confirm {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  15%,
+  75% {
+    opacity: 1;
+  }
+}
+@keyframes meme-options-dim {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.meme-options > button {
+  animation: meme-option-arrive 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.meme-options > button:nth-child(2) {
+  animation-delay: 35ms;
+}
+.meme-options > button:nth-child(3) {
+  animation-delay: 70ms;
+}
+@keyframes meme-options-reveal {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes meme-option-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
 .search-dock {
   bottom: max(24px, env(safe-area-inset-bottom));
 }
