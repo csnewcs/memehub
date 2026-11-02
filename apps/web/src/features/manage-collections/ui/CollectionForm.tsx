@@ -33,12 +33,13 @@ export function CollectionForm({
     if (name.trim() && !create.isPending && !disabled) create.mutate();
   }
   return (
-    <form onSubmit={submit} className="space-y-3">
-      <label className="block space-y-2 text-xs font-medium">
-        New collection
+    <form onSubmit={submit} className="space-y-2">
+      <div className="relative">
         <Input
           name="collection-name"
-          placeholder="Give it a name"
+          aria-label="New collection"
+          placeholder="New collection"
+          className="pr-11"
           value={name}
           maxLength={100}
           required
@@ -48,16 +49,22 @@ export function CollectionForm({
             create.reset();
           }}
         />
-      </label>
-      <Button
-        type="submit"
-        variant="secondary"
-        className="w-full"
-        disabled={!name.trim() || create.isPending || disabled}
-      >
-        {create.isPending ? <LoadingIcon className="animate-spin" /> : <PlusIcon />}
-        {memeId ? 'Create & save' : 'Create collection'}
-      </Button>
+        <Button
+          type="submit"
+          variant="ghost"
+          size="icon-sm"
+          className="absolute right-0.5 top-1/2 -translate-y-1/2"
+          aria-label={memeId ? 'Create & save' : 'Create collection'}
+          title={memeId ? 'Create & save' : 'Create collection'}
+          disabled={!name.trim() || create.isPending || disabled}
+        >
+          {create.isPending ? (
+            <LoadingIcon className="animate-spin" aria-hidden="true" />
+          ) : (
+            <PlusIcon aria-hidden="true" />
+          )}
+        </Button>
+      </div>
       {create.isError && (
         <p role="alert" className="text-xs text-destructive">
           {apiError(create.error)}

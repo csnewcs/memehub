@@ -206,9 +206,7 @@ export function MyCollections({
                   </div>
                 )}
               </div>
-              <div className="border-t pt-5">
-                <CollectionForm userId={userId} onCreated={onSelect} />
-              </div>
+              <CollectionForm userId={userId} onCreated={onSelect} />
             </DialogBody>
           </>
         )}

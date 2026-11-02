@@ -153,14 +153,12 @@ export function SaveToCollection({ memeId, onClose }: { memeId: string; onClose:
                   </p>
                 )}
               </div>
-              <div className="border-t pt-5">
-                <CollectionForm
-                  userId={userId}
-                  memeId={memeId}
-                  disabled={change.isPending}
-                  onCreated={(collection) => setMessage(`Saved to “${collection.name}”.`)}
-                />
-              </div>
+              <CollectionForm
+                userId={userId}
+                memeId={memeId}
+                disabled={change.isPending}
+                onCreated={(collection) => setMessage(`Saved to “${collection.name}”.`)}
+              />
               <p role="status" className="text-xs text-muted-foreground">
                 {message}
               </p>

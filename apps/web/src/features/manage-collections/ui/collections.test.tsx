@@ -213,10 +213,8 @@ describe('collection interactions', () => {
         '  고양이 모음  ',
       );
       input.dispatchEvent(new Event('input', { bubbles: true }));
-      document
-        .querySelector('form')!
-        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     });
+    await click(document.querySelector('button[aria-label="Create & save"]'));
     await until(() => !!document.querySelector('[aria-label="Remove from 고양이 모음"]'));
     expect(writes).toEqual([{ name: '고양이 모음', meme_id: 'image' }]);
     expect(
