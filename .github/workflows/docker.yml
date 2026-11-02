@@ -1,0 +1,149 @@
+name: Check and build container images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/docker.yml'
+      - 'Dockerfile.*'
+      - '.dockerignore'
+      - 'apps/api/**'
+      - 'apps/web/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'vite.config.ts'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/docker.yml'
+      - 'Dockerfile.*'
+      - '.dockerignore'
+      - 'apps/api/**'
+      - 'apps/web/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'vite.config.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: containers-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-api:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: memehub_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d memehub_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    defaults:
+      run:
+        working-directory: apps/api
+    env:
+      TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/memehub_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
+      - name: Install animated image converter
+        run: sudo apt-get update && sudo apt-get install --yes webp
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  check-web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec vp run @memehub/web#test
+      - run: pnpm exec vp run @memehub/web#check
+
+  build:
+    needs: [check-api, check-web]
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: api
+            architecture: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - service: api
+            architecture: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+          - service: web
+            architecture: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - service: web
+            architecture: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile.${{ matrix.service }}
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+          tags: ghcr.io/${{ github.repository }}-${{ matrix.service }}:${{ github.sha }}-${{ matrix.architecture }}
+          cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.architecture }}
+          cache-to: type=gha,scope=${{ matrix.service }}-${{ matrix.architecture }},mode=max
+
+  manifest:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        service: [api, web]
+    steps:
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create multi-architecture manifest
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}-${{ matrix.service }}
+        run: |
+          docker buildx imagetools create \
+            --tag "$IMAGE:latest" \
+            --tag "$IMAGE:sha-${GITHUB_SHA::7}" \
+            "$IMAGE:${GITHUB_SHA}-amd64" \
+            "$IMAGE:${GITHUB_SHA}-arm64"

@@ -1,0 +1,25 @@
+FROM node:24-alpine AS build
+RUN npm install --global pnpm@11.9.0
+WORKDIR /src
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+RUN pnpm install --frozen-lockfile
+COPY vite.config.ts ./
+COPY apps/web/ apps/web/
+ARG PUBLIC_API_BASE_URL=/api
+ENV PUBLIC_API_BASE_URL=${PUBLIC_API_BASE_URL}
+RUN pnpm --filter @memehub/web build \
+    && pnpm --filter @memehub/web deploy --legacy --prod /out \
+    && cp -R apps/web/dist /out/dist
+
+FROM node:24-alpine
+ENV NODE_ENV=production \
+    HOST=0.0.0.0 \
+    PORT=4321 \
+    API_INTERNAL_BASE_URL=http://api:8080/api
+WORKDIR /app
+COPY --from=build --chown=node:node /out/ ./
+USER node
+EXPOSE 4321
+CMD ["node", "./dist/server/entry.mjs"]
