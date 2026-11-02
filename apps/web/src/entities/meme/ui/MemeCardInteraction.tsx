@@ -9,17 +9,20 @@ import { useDesktopHover } from '../../../shared/lib/desktop-hover';
 import { Button } from '../../../shared/ui/button';
 import { CopyIcon, DetailsIcon, CheckIcon, LoadingIcon } from '../../../shared/ui/icons';
 import { MemeShare } from './MemeShare';
+import { MemeSave } from './MemeSave';
 
 export function MemeCardInteraction({
   meme,
   children,
   onDetails,
+  onSave,
   optionsTarget,
   hovered,
 }: {
   meme: Meme;
   children: ReactNode;
   onDetails: () => void;
+  onSave: () => void;
   optionsTarget?: HTMLDivElement | null;
   hovered: boolean;
 }) {
@@ -146,6 +149,12 @@ export function MemeCardInteraction({
           <DetailsIcon aria-hidden="true" />
         </Button>
         <MemeShare meme={meme} />
+        <MemeSave
+          onSave={() => {
+            changeOptions(false);
+            onSave();
+          }}
+        />
       </div>
     </div>
   );
@@ -207,6 +216,7 @@ export function MemeCardInteraction({
             <DetailsIcon aria-hidden="true" />
           </Button>
           <MemeShare meme={meme} />
+          <MemeSave onSave={onSave} />
           {status === 'failed' && (
             <span role="alert" className="w-full text-right text-xs text-white">
               Could not copy. Try again.
@@ -260,7 +270,7 @@ export function MemeCardInteraction({
           if (start.current) suppressClick.current = true;
           cancelPress();
         }}
-        onClick={(event) => {
+        onClick={() => {
           if (suppressClick.current) {
             suppressClick.current = false;
             return;
