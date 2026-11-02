@@ -1,20 +1,24 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'astro/config';
 import react from '@astrojs/react';
+import node from '@astrojs/node';
 import tailwindcss from '@tailwindcss/vite';
 import { loadEnv } from 'vite-plus';
 
 const env = loadEnv(
   process.env.NODE_ENV || 'development',
   fileURLToPath(new URL('../../', import.meta.url)),
-  ['PUBLIC_API_BASE_URL', 'DEV_API_PROXY_TARGET', 'APP_BASE_URL'],
+  ['PUBLIC_API_BASE_URL', 'DEV_API_PROXY_TARGET', 'APP_BASE_URL', 'API_INTERNAL_BASE_URL'],
 );
 
 export default defineConfig({
   integrations: [react()],
+  output: 'server',
+  adapter: node({ mode: 'standalone' }),
   vite: {
     plugins: [tailwindcss()],
     define: {
+      'import.meta.env.API_INTERNAL_BASE_URL': JSON.stringify(env.API_INTERNAL_BASE_URL || `${env.DEV_API_PROXY_TARGET || 'http://127.0.0.1:8080'}/api`),
       'import.meta.env.PUBLIC_API_BASE_URL': JSON.stringify(env.PUBLIC_API_BASE_URL || '/api'),
       'import.meta.env.PUBLIC_APP_BASE_URL': JSON.stringify(env.APP_BASE_URL || ''),
     },

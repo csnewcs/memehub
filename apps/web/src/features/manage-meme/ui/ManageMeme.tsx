@@ -11,11 +11,13 @@ import { DialogPanelHeader, DialogPanelFooter, DialogBody } from '../../../share
 export function ManageMeme({
   meme,
   content,
+  actions,
   onDeleted,
   onPendingChange,
 }: {
   meme: Meme;
   content: ReactNode;
+  actions: ReactNode;
   onDeleted: () => void;
   onPendingChange: (pending: boolean) => void;
 }) {
@@ -76,18 +78,21 @@ export function ManageMeme({
       {action === null ? (
         <>
           {content}
-          <DialogPanelFooter>
-            <Button variant="outline" size="sm" onClick={() => start('edit')}>
-              Edit
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground hover:text-destructive"
-              onClick={() => start('delete')}
-            >
-              Delete
-            </Button>
+          <DialogPanelFooter className="flex-row items-center justify-between sm:justify-between">
+            {actions}
+            <div className="ml-auto flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => start('edit')}>
+                Edit
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-destructive"
+                onClick={() => start('delete')}
+              >
+                Delete
+              </Button>
+            </div>
           </DialogPanelFooter>
         </>
       ) : action === 'edit' ? (

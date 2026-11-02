@@ -22,15 +22,26 @@ describe('uploader search', () => {
   it('combines an uploader, exact tags, and free text', () => {
     expect(parseMemeSearch('@noeulnight #work #"Exact tag" cat')).toEqual({
       uploader: 'noeulnight',
-      tags: ['work', 'Exact tag'],
+      tags: ['work', 'Exacttag'],
       text: 'cat',
     });
     expect(parseMemeSearch('#work #work')).toEqual({ uploader: '', tags: ['work'], text: '' });
   });
   it('round-trips tags containing spaces and quotes and keeps incomplete tokens', () => {
     for (const tag of ['Exact tag', 'a "quote"', 'path\\tag'])
-      expect(parseMemeSearch(formatTagToken(tag)).tags).toEqual([tag]);
+      expect(parseMemeSearch(formatTagToken(tag)).tags).toEqual([
+        tag.normalize('NFC').replace(/\s/gu, ''),
+      ]);
     expect(parseMemeSearch('#"incomplete tag').tags).toEqual([]);
     expect(parseMemeSearch('#').text).toBe('#');
+  });
+});
+
+it('removes tag whitespace while preserving ordinary search text', () => {
+  expect(formatTagToken(' 감정\t 표현\u00a0')).toBe('#감정표현');
+  expect(parseMemeSearch('#"감정  표현" #감정표현 오늘 기분')).toEqual({
+    uploader: '',
+    tags: ['감정표현'],
+    text: '오늘 기분',
   });
 });

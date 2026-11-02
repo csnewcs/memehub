@@ -1,4 +1,5 @@
 export function formatTagToken(tag: string) {
+  tag = tag.replace(/\s/gu, '').normalize('NFC');
   return `#${/[\s"\\]/u.test(tag) ? JSON.stringify(tag) : tag}`;
 }
 
@@ -18,6 +19,7 @@ export function parseMemeSearch(value: string) {
           return whole;
         }
       }
+      tag = tag.replace(/\s/gu, '').normalize('NFC');
       if (!tag) return whole;
       tags.push(tag);
       return space;

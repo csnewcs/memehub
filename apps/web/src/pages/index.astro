@@ -1,20 +1,66 @@
 ---
 import LibraryApp from '../app/providers/LibraryApp';
+import type { Meme } from '../entities/meme/model/types';
+import { metadata } from '../entities/meme/model/metadata';
+import { publicBase, internalAPI } from '../shared/seo/server';
 import '../shared/styles/global.css';
 const apiBase = import.meta.env.PUBLIC_API_BASE_URL || '/api';
+const appBase = publicBase(Astro.url);
+const id = Astro.url.searchParams.get('meme');
+let meme: Meme | undefined;
+let status = 200;
+if (id !== null) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) status = 404;
+  else {
+    try {
+      const response = await fetch(internalAPI(`memes/${encodeURIComponent(id)}`), { signal: AbortSignal.timeout(5000) });
+      if (response.status === 404) status = 404;
+      else if (!response.ok) status = 503;
+      else meme = await response.json();
+    } catch { status = 503; }
+  }
+}
+const seo = metadata(appBase, apiBase, meme);
+if (status !== 200) {
+  seo.title = status === 404 ? 'Meme not found | Memehub' : 'Temporarily unavailable | Memehub';
+  seo.description = status === 404 ? 'This meme is unavailable or has been removed.' : 'Please try again shortly.';
+}
+Astro.response.status = status;
+Astro.response.headers.set('Cache-Control', 'no-store');
+const robots = status !== 200 ? 'noindex, nofollow' : !meme && Astro.url.search ? 'noindex, follow' : 'index, follow';
 ---
 
 <!doctype html>
 <html lang="en" class="dark">
   <head>
     <meta charset="utf-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="A home for image and text memes. Search the collection and find your next perfect reaction." />
+    <meta name="description" content={seo.description} />
+    <meta name="robots" content={robots} />
     <meta name="theme-color" content="#0a0a0a" />
-    <title>Memehub — The internet, collected.</title>
+    <link rel="canonical" href={seo.canonical} />
+    <meta property="og:site_name" content="Memehub" />
+    <meta property="og:type" content={meme ? 'article' : 'website'} />
+    <meta property="og:title" content={seo.title} />
+    <meta property="og:description" content={seo.description} />
+    <meta property="og:url" content={seo.canonical} />
+    <meta property="og:image" content={seo.image} />
+    <meta property="og:image:alt" content={seo.imageAlt} />
+    {seo.imageWidth && <meta property="og:image:width" content={String(seo.imageWidth)} />}
+    {seo.imageHeight && <meta property="og:image:height" content={String(seo.imageHeight)} />}
+    <meta name="twitter:card" content={seo.twitterCard} />
+    <meta name="twitter:title" content={seo.title} />
+    <meta name="twitter:description" content={seo.description} />
+    <meta name="twitter:image" content={seo.image} />
+    <meta name="twitter:image:alt" content={seo.imageAlt} />
+    <title>{seo.title}</title>
   </head>
   <body>
-    <a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-background focus:p-4">Skip to collection</a>
-    <LibraryApp apiBase={apiBase} client:load />
+    {status === 200 ? <>
+      <a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-background focus:p-4">Skip to collection</a>
+      {meme && <noscript><article><h1>{meme.title || 'Saved meme'}</h1><p>{meme.description || meme.body_text}</p>{meme.content_type === 'image' && <img src={seo.image} alt={seo.imageAlt} />}</article></noscript>}
+      <LibraryApp apiBase={apiBase} client:load />
+    </> : <main class="mx-auto max-w-lg space-y-4 px-6 py-20"><h1 class="text-xl font-semibold">{status === 404 ? 'Meme not found' : 'Temporarily unavailable'}</h1><p class="text-sm text-muted-foreground">{seo.description}</p><a href="/" class="text-sm underline">Back to collection</a></main>}
   </body>
 </html>

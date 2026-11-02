@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"golang.org/x/text/unicode/norm"
+	"github.com/noeulnight/memehub/apps/api/internal/tag"
 )
 
 type Input struct {
@@ -61,8 +61,8 @@ func (r *Result) validate(contentType string) error {
 	}
 	seen := map[string]bool{}
 	tags := []string{}
-	for _, tag := range r.Tags {
-		tag = norm.NFC.String(strings.TrimSpace(tag))
+	for _, name := range r.Tags {
+		tag := tag.Name(name)
 		if tag == "" || !utf8.ValidString(tag) || strings.ContainsRune(tag, 0) || utf8.RuneCountInString(tag) > 50 {
 			return failure("invalid_analysis_result", false)
 		}

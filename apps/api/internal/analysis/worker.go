@@ -7,13 +7,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"golang.org/x/text/unicode/norm"
+	"github.com/noeulnight/memehub/apps/api/internal/tag"
 )
 
 type Analyzer interface {
@@ -167,10 +166,11 @@ func (w *Worker) complete(ctx context.Context, j job, response Response) error {
 		}
 		if first && revision == j.Revision {
 			changed := false
-			for _, name := range response.Result.Tags {
+			for _, rawName := range response.Result.Tags {
+				name := tag.Name(rawName)
 				var tagID uuid.UUID
 				err = tx.QueryRow(ctx, `INSERT INTO tags(id,name,normalized_name) VALUES($1,$2,$3)
- ON CONFLICT(normalized_name) DO UPDATE SET normalized_name=excluded.normalized_name RETURNING id`, uuid.New(), name, strings.ToLower(norm.NFC.String(strings.TrimSpace(name)))).Scan(&tagID)
+ ON CONFLICT(normalized_name) DO UPDATE SET normalized_name=excluded.normalized_name RETURNING id`, uuid.New(), name, tag.Key(name)).Scan(&tagID)
 				if err != nil {
 					return err
 				}

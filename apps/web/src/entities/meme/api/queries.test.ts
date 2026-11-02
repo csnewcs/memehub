@@ -62,8 +62,8 @@ describe('meme queries', () => {
   it('serializes typed and selected tags as repeated exact filters', async () => {
     const api = createApi('/api');
     api.defaults.adapter = async (config) => {
-      expect(config.params.tag).toEqual(['selected', 'work', 'Exact tag']);
-      expect(api.getUri(config)).toContain('tag=selected&tag=work&tag=Exact+tag');
+      expect(config.params.tag).toEqual(['selected', 'work', 'Exacttag']);
+      expect(api.getUri(config)).toContain('tag=selected&tag=work&tag=Exacttag');
       expect(config.params.q).toBe('cat');
       return {
         config,

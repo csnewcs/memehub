@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -318,4 +319,40 @@ func (s *Server) media(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"original": first, "thumbnail": second})
+}
+
+// originalMedia is a stable public URL; storage credentials and signed URLs stay private.
+func (s *Server) originalMedia(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		problem(w, 400, "invalid_meme_id")
+		return
+	}
+	var key, mime string
+	var size int64
+	err = s.db.QueryRow(r.Context(), `SELECT original_object_key,mime_type,size_bytes FROM memes WHERE id=$1 AND content_type='image' AND status='ready' AND deleted_at IS NULL`, id).Scan(&key, &mime, &size)
+	if errors.Is(err, pgx.ErrNoRows) {
+		problem(w, 404, "meme_not_found")
+		return
+	}
+	if err != nil {
+		internal(w)
+		return
+	}
+	if s.store == nil {
+		problem(w, 503, "storage_unavailable")
+		return
+	}
+	body, err := s.store.Read(r.Context(), key)
+	if err != nil {
+		problem(w, 502, "storage_unavailable")
+		return
+	}
+	defer body.Close()
+	w.Header().Set("Content-Type", mime)
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	w.Header().Set("Content-Disposition", "inline")
+	if r.Method != http.MethodHead {
+		_, _ = io.Copy(w, body)
+	}
 }

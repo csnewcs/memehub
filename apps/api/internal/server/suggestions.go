@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/noeulnight/memehub/apps/api/internal/tag"
 	"net/http"
 	"strings"
 	"unicode"
@@ -14,9 +15,12 @@ func (s *Server) searchSuggestions(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "invalid_suggestion_query")
 		return
 	}
+	if kind == "tag" {
+		q = tag.Name(q)
+	}
 	prefix := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(q) + "%"
 	sql := `SELECT t.name,t.name FROM tags t
- WHERE lower(t.name) LIKE lower($1) AND EXISTS(SELECT 1 FROM meme_tags mt JOIN memes m ON m.id=mt.meme_id WHERE mt.tag_id=t.id AND m.status='ready' AND m.deleted_at IS NULL)
+ WHERE t.normalized_name LIKE lower($1) AND EXISTS(SELECT 1 FROM meme_tags mt JOIN memes m ON m.id=mt.meme_id WHERE mt.tag_id=t.id AND m.status='ready' AND m.deleted_at IS NULL)
  ORDER BY t.normalized_name,t.name LIMIT 5`
 	args := []any{prefix}
 	if kind == "user" {

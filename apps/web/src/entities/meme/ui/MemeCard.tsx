@@ -1,11 +1,18 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { metadata, siteTitle } from '../model/metadata';
 import type { Meme } from '../model/types';
 import { useMemeMedia } from '../api/queries';
 import { Dialog, DialogTitle, DialogTrigger } from '../../../shared/ui/dialog';
-import { DialogPanel, DialogBody, DialogPanelHeader } from '../../../shared/ui/dialog-layout';
+import {
+  DialogPanel,
+  DialogBody,
+  DialogPanelHeader,
+  DialogPanelFooter,
+} from '../../../shared/ui/dialog-layout';
 import { Button } from '../../../shared/ui/button';
 import { CopyIcon, DetailsIcon, CheckIcon, LoadingIcon } from '../../../shared/ui/icons';
 import { copyImage } from '../../../shared/lib/copy-image';
+import { MemeShare } from './MemeShare';
 import { Skeleton } from '../../../shared/ui/skeleton';
 
 function ImagePreview({ meme, full = false }: { meme: Meme; full?: boolean }) {
@@ -67,6 +74,8 @@ export function MemeCard({
   onUserSearch,
   manage,
   analysis,
+  detailOnly = false,
+  onClose,
 }: {
   meme: Meme;
   index: number;
@@ -74,13 +83,29 @@ export function MemeCard({
   onUserSearch: (username: string) => void;
   manage?: (props: {
     content: ReactNode;
+    actions: ReactNode;
     onDeleted: () => void;
     onPendingChange: (pending: boolean) => void;
   }) => ReactNode;
   analysis?: ReactNode;
+  detailOnly?: boolean;
+  onClose?: () => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(detailOnly);
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.title;
+    document.title = metadata(window.location.origin, '/api', meme).title;
+    return () => {
+      document.title = detailOnly ? siteTitle : previous;
+    };
+  }, [open, meme, detailOnly]);
+  function changeOpen(next: boolean) {
+    if (busy) return;
+    setOpen(next);
+    if (!next) onClose?.();
+  }
   const content = (
     <>
       <DialogPanelHeader>
@@ -97,7 +122,7 @@ export function MemeCard({
               type="button"
               className="ml-1 hover:underline"
               onClick={() => {
-                setOpen(false);
+                changeOpen(false);
                 onUserSearch(meme.created_by_username!);
               }}
             >
@@ -132,7 +157,7 @@ export function MemeCard({
                     type="button"
                     className="cursor-pointer hover:underline focus-visible:underline"
                     onClick={() => {
-                      setOpen(false);
+                      changeOpen(false);
                       onTagSearch(tag);
                     }}
                   >
@@ -174,35 +199,32 @@ export function MemeCard({
     </>
   );
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (!busy) setOpen(next);
-      }}
-    >
-      <article
-        className="meme-card min-w-0 overflow-hidden"
-        style={{ animationDelay: `${Math.min(index, 8) * 25}ms` }}
-      >
-        {meme.content_type === 'image' ? (
-          <div className="group relative">
-            <ImagePreview meme={meme} />
-            <ImageActions meme={meme} />
-          </div>
-        ) : (
-          <DialogTrigger asChild>
-            <button
-              type="button"
-              className="block w-full cursor-pointer text-left outline-none"
-              aria-label={`View details: ${meme.title || 'Text'}`}
-            >
-              <p className="line-clamp-6 whitespace-pre-wrap break-words text-sm leading-snug">
-                {meme.body_text}
-              </p>
-            </button>
-          </DialogTrigger>
-        )}
-      </article>
+    <Dialog open={open} onOpenChange={changeOpen}>
+      {!detailOnly && (
+        <article
+          className="meme-card min-w-0 overflow-hidden"
+          style={{ animationDelay: `${Math.min(index, 8) * 25}ms` }}
+        >
+          {meme.content_type === 'image' ? (
+            <div className="group relative">
+              <ImagePreview meme={meme} />
+              <ImageActions meme={meme} />
+            </div>
+          ) : (
+            <DialogTrigger asChild>
+              <button
+                type="button"
+                className="block w-full cursor-pointer text-left outline-none"
+                aria-label={`View details: ${meme.title || 'Text'}`}
+              >
+                <p className="line-clamp-6 whitespace-pre-wrap break-words text-sm leading-snug">
+                  {meme.body_text}
+                </p>
+              </button>
+            </DialogTrigger>
+          )}
+        </article>
+      )}
       <DialogPanel
         size={meme.content_type === 'image' ? 'wide' : 'default'}
         aria-describedby={undefined}
@@ -220,9 +242,19 @@ export function MemeCard({
             </div>
           )}
           {manage ? (
-            manage({ content, onDeleted: () => setOpen(false), onPendingChange: setBusy })
+            manage({
+              content,
+              actions: <MemeShare meme={meme} />,
+              onDeleted: () => changeOpen(false),
+              onPendingChange: setBusy,
+            })
           ) : (
-            <div className="flex min-h-0 min-w-0 flex-col pb-6">{content}</div>
+            <div className="flex min-h-0 min-w-0 flex-col">
+              {content}
+              <DialogPanelFooter>
+                <MemeShare meme={meme} />
+              </DialogPanelFooter>
+            </div>
           )}
         </div>
       </DialogPanel>
@@ -253,7 +285,7 @@ function ImageActions({ meme }: { meme: Meme }) {
   }
   return (
     <div
-      className={`absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-end gap-1 bg-gradient-to-t from-black/80 to-transparent p-2 pt-6 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 ${state === 'idle' ? 'opacity-0' : 'opacity-100'}`}
+      className={`absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-end gap-1 bg-gradient-to-t from-black/80 to-transparent p-2 pt-6 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 group-has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100 ${state === 'idle' ? 'opacity-0' : 'opacity-100'}`}
     >
       <Button
         type="button"
@@ -283,6 +315,7 @@ function ImageActions({ meme }: { meme: Meme }) {
           <DetailsIcon aria-hidden="true" />
         </Button>
       </DialogTrigger>
+      <MemeShare meme={meme} />
       {state === 'failed' && (
         <span role="alert" className="w-full text-right text-xs text-white">
           Could not copy. Try again.

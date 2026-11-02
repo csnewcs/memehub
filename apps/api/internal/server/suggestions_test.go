@@ -78,6 +78,7 @@ func TestSearchSuggestions(t *testing.T) {
 		{"kind=user&q=user9", 0, ""},
 		{"kind=user&q=user10", 0, ""},
 		{"kind=tag&q=work", 3, "work"},
+		{"kind=tag&q=w+o+r+k", 3, "work"},
 		{"kind=tag&q=work%25", 1, "work%literal"},
 		{"kind=tag&q=work_", 1, "work_literal"},
 		{"kind=tag&q=unused", 0, ""},

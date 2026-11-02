@@ -15,8 +15,8 @@ describe('search completion', () => {
     expect(result).toEqual({ value: '@noeulnight cat', caret: 12 });
     const tag = 'cat #work dog';
     expect(applyCompletion(tag, searchCompletion(tag, 7)!, 'Exact tag')).toEqual({
-      value: 'cat #"Exact tag" dog',
-      caret: 17,
+      value: 'cat #Exacttag dog',
+      caret: 14,
     });
   });
 });

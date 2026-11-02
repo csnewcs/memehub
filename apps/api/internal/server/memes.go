@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"golang.org/x/text/unicode/norm"
+	"github.com/noeulnight/memehub/apps/api/internal/tag"
 )
 
 type memeInput struct {
@@ -76,14 +76,8 @@ func nullable(value string) *string {
 	}
 	return &value
 }
-func normalizeTag(value string) string {
-	return strings.Map(func(r rune) rune {
-		if r >= 'A' && r <= 'Z' {
-			return r + ('a' - 'A')
-		}
-		return r
-	}, norm.NFC.String(strings.TrimSpace(value)))
-}
+func normalizeTag(value string) string { return tag.Key(value) }
+
 func (s *Server) validateMeme(in *memeInput) string {
 	if in.ContentType != "text" && in.ContentType != "image" {
 		return "invalid_content_type"
@@ -115,8 +109,8 @@ func (s *Server) validateMeme(in *memeInput) string {
 	}
 	seen := map[string]bool{}
 	cleaned := []string{}
-	for _, tag := range in.Tags {
-		tag = norm.NFC.String(strings.TrimSpace(tag))
+	for _, name := range in.Tags {
+		tag := tag.Name(name)
 		if tag == "" || !utf8.ValidString(tag) || strings.ContainsRune(tag, 0) || utf8.RuneCountInString(tag) > 50 {
 			return "invalid_tag"
 		}

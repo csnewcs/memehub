@@ -1,4 +1,5 @@
 export {
+  HiOutlineLink as LinkIcon,
   HiOutlineDuplicate as CopyIcon,
   HiOutlineInformationCircle as DetailsIcon,
   HiOutlineChevronDown as ChevronDownIcon,

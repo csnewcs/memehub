@@ -7,7 +7,14 @@ import { CloseIcon } from '../../../shared/ui/icons';
 import { Button } from '../../../shared/ui/button';
 import { Masonry } from '../../../shared/ui/masonry';
 import { apiError, useApi } from '../../../shared/api/client';
-import { formatTagToken, MemeCard, useMemeList, type ContentFilter } from '../../../entities/meme';
+import {
+  formatTagToken,
+  MemeCard,
+  useMemeList,
+  type Meme,
+  type ContentFilter,
+} from '../../../entities/meme';
+import { BrowseTags } from '../../../features/browse-tags';
 import { SearchDock } from '../../../features/search-memes';
 import { UserMenu } from '../../../features/user-menu';
 import { AdminSettings } from '../../admin-settings';
@@ -16,12 +23,20 @@ export function MemeLibrary() {
   const api = useApi();
   const session = useQuery({ queryKey: ['session'], queryFn: () => getSession(api) });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sharedID, setSharedID] = useState('');
+  const sharedMeme = useQuery({
+    queryKey: ['memes', 'detail', sharedID],
+    queryFn: async ({ signal }) =>
+      (await api.get<Meme>(`memes/${encodeURIComponent(sharedID)}`, { signal })).data,
+    enabled: !!sharedID,
+  });
   const [mine, setMine] = useState(false);
   const [tag, setTag] = useState('');
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<ContentFilter>('');
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    setSharedID(params.get('meme') || '');
     setQuery(params.get('q') || '');
     setTag(params.get('tag') || '');
     setMine(params.get('mine') === 'true');
@@ -55,6 +70,46 @@ export function MemeLibrary() {
 
   return (
     <div className="min-h-dvh">
+      {sharedID && sharedMeme.isPending && (
+        <p role="status" className="px-6 pt-6 text-sm text-muted-foreground">
+          Loading shared meme…
+        </p>
+      )}
+      {sharedID && sharedMeme.isError && (
+        <div role="alert" className="space-y-2 px-6 pt-6 text-sm">
+          <p>{apiError(sharedMeme.error)}</p>
+          <Button variant="secondary" onClick={() => void sharedMeme.refetch()}>
+            Try again
+          </Button>
+        </div>
+      )}
+      {sharedID && sharedMeme.data && (
+        <MemeCard
+          key={sharedID}
+          meme={sharedMeme.data}
+          index={0}
+          detailOnly
+          onClose={() => {
+            setSharedID('');
+            const url = new URL(window.location.href);
+            url.searchParams.delete('meme');
+            window.history.replaceState(null, '', url);
+          }}
+          onTagSearch={(selected) => updateSearch('', filter, selected)}
+          onUserSearch={(username) => updateSearch(`@${username}`, filter)}
+          analysis={
+            session.data?.is_admin ? (
+              <ManageAnalysis meme={sharedMeme.data} hideCompleted />
+            ) : undefined
+          }
+          manage={
+            session.data &&
+            (session.data.id === sharedMeme.data.created_by || session.data.is_admin)
+              ? (props) => <ManageMeme meme={sharedMeme.data!} {...props} />
+              : undefined
+          }
+        />
+      )}
       <main id="main" className="px-4 pb-32 pt-4 sm:px-6 sm:pt-6">
         <div aria-live="polite" aria-busy={loading}>
           {loading ? (
@@ -132,7 +187,7 @@ export function MemeLibrary() {
       {session.data?.is_admin && (
         <AdminSettings open={settingsOpen} onOpenChange={setSettingsOpen} />
       )}
-      <div className="search-dock fixed left-1/2 z-20 flex w-[calc(100%_-_32px)] max-w-[414px] -translate-x-1/2 items-center gap-2">
+      <div className="search-dock fixed left-1/2 z-20 flex w-[calc(100%_-_32px)] max-w-[468px] -translate-x-1/2 items-center gap-2">
         {mine && (
           <Button
             variant="secondary"
@@ -151,6 +206,7 @@ export function MemeLibrary() {
               : updateSearch(value, filter)
           }
         />
+        <BrowseTags onSelect={(selectedTag) => updateSearch('', filter, selectedTag)} />
         <UploadMeme />
         <UserMenu
           onSettings={() => setSettingsOpen(true)}

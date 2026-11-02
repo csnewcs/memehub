@@ -389,7 +389,7 @@ func TestMemeManagementPermissions(t *testing.T) {
 			updated := request(t, h, "PUT", path, input, admin, adminCSRF)
 			mustStatus(t, updated, 200)
 			var meme Meme
-			if err = json.Unmarshal(updated.Body.Bytes(), &meme); err != nil || meme.Revision != 2 || len(meme.Tags) != 1 || meme.Tags[0] != "Exact tag" {
+			if err = json.Unmarshal(updated.Body.Bytes(), &meme); err != nil || meme.Revision != 2 || len(meme.Tags) != 1 || meme.Tags[0] != "Exacttag" {
 				t.Fatal("edit did not preserve fields and revision")
 			}
 			if kind == "image" && (meme.BodyText != nil || meme.ExtractedText != "Read from image") {

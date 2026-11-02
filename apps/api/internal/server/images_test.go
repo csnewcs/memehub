@@ -128,6 +128,7 @@ func TestImageLifecycle(t *testing.T) {
 	}
 	path := "/api/memes/" + reservation.ID.String()
 	mustStatus(t, request(t, h, "GET", path+"/media", nil, nil, ""), 404)
+	mustStatus(t, request(t, h, "GET", path+"/file", nil, nil, ""), 404)
 	mustStatus(t, request(t, h, "GET", path, nil, nil, ""), 404)
 	before := request(t, h, "GET", "/api/memes?content_type=image", nil, nil, "")
 	mustStatus(t, before, 200)
@@ -202,6 +203,7 @@ func TestImageLifecycle(t *testing.T) {
 	duplicatePath := "/api/memes/" + duplicate.ID.String()
 	mustStatus(t, request(t, h, "POST", duplicatePath+"/upload-completion", nil, cookies, csrf), 200)
 	mustStatus(t, request(t, h, "DELETE", duplicatePath, nil, cookies, csrf), 204)
+	mustStatus(t, request(t, h, "GET", duplicatePath+"/file", nil, nil, ""), 404)
 	delete(input, "allow_duplicate")
 
 	mustStatus(t, request(t, h, "GET", path, nil, nil, ""), 200)
@@ -211,6 +213,16 @@ func TestImageLifecycle(t *testing.T) {
 		t.Fatal("ready image is missing from search")
 	}
 
+	file := request(t, h, "GET", path+"/file", nil, nil, "")
+	mustStatus(t, file, 200)
+	if file.Header().Get("Content-Type") != "image/png" || file.Header().Get("Content-Disposition") != "inline" || !bytes.Equal(file.Body.Bytes(), data) {
+		t.Fatal("stable URL did not serve original PNG")
+	}
+	head := request(t, h, "HEAD", path+"/file", nil, nil, "")
+	mustStatus(t, head, 200)
+	if head.Body.Len() != 0 || head.Header().Get("Content-Length") == "" {
+		t.Fatal("invalid HEAD response")
+	}
 	media := request(t, h, "GET", path+"/media", nil, nil, "")
 	mustStatus(t, media, 200)
 	var urls struct{ Original, Thumbnail storage.SignedURL }
@@ -322,6 +334,11 @@ func TestGIFCompletionPublishesAnimatedPreview(t *testing.T) {
 	}
 	if staticKey == previewKey || !strings.HasSuffix(previewKey, ".webp") {
 		t.Fatal("static analysis image must remain separate")
+	}
+	file := request(t, h, "GET", path+"/file", nil, nil, "")
+	mustStatus(t, file, 200)
+	if file.Header().Get("Content-Type") != "image/gif" || !bytes.Equal(file.Body.Bytes(), data) {
+		t.Fatal("stable URL changed original GIF")
 	}
 	media := request(t, h, "GET", path+"/media", nil, nil, "")
 	mustStatus(t, media, 200)
