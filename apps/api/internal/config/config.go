@@ -49,9 +49,6 @@ func Parse(get func(string) string) (Config, error) {
 	if err != nil || dsn == nil || (dsn.Scheme != "postgres" && dsn.Scheme != "postgresql") || dsn.Hostname() == "" || dsn.Path == "" {
 		return c, fmt.Errorf("DATABASE_URL must be a PostgreSQL URL")
 	}
-	if c.Env == "production" && dsn.Query().Get("sslmode") != "verify-full" {
-		return c, fmt.Errorf("DATABASE_URL requires sslmode=verify-full in production")
-	}
 	for _, item := range []struct{ name, value string }{{"APP_BASE_URL", c.AppBaseURL}, {"OIDC_ISSUER_URL", c.OIDCIssuer}, {"OIDC_REDIRECT_URL", c.OIDCRedirectURL}} {
 		u, err := url.Parse(item.value)
 		if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Fragment != "" || u.RawQuery != "" {

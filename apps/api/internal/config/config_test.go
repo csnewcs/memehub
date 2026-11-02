@@ -50,3 +50,14 @@ func TestConfigurationValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestProductionUsesConfiguredDatabaseTransport(t *testing.T) {
+	for _, mode := range []string{"disable", "verify-full"} {
+		t.Run(mode, func(t *testing.T) {
+			values := map[string]string{"APP_ENV": "production", "HTTP_ADDR": "0.0.0.0:8080", "DATABASE_URL": "postgres://memehub:secret@postgres-service.postgres.svc.cluster.local/memehub?sslmode=" + mode, "APP_BASE_URL": "https://meme.lth.so", "OIDC_ISSUER_URL": "https://id.example.com", "OIDC_CLIENT_ID": "memehub", "OIDC_REDIRECT_URL": "https://meme.lth.so/api/auth/callback", "OPENAI_MODEL": "configured-model", "SESSION_COOKIE_SECURE": "true", "SESSION_TTL_SECONDS": "604800", "TEXT_MAX_LENGTH": "10000"}
+			if _, err := Parse(func(key string) string { return values[key] }); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
