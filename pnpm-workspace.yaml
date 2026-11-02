@@ -1,0 +1,7 @@
+packages:
+  - apps/*
+# Vite+ 1.4.0 bundles Vite 8 under its own package version.
+peerDependencyRules:
+  allowedVersions:
+    'vitest@5.0.5>vite': '1.4.0'
+    '@vitest/mocker@5.0.5>vite': '1.4.0'

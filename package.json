@@ -1,0 +1,20 @@
+{
+  "name": "memehub",
+  "private": true,
+  "scripts": {
+    "dev": "vp run -r --parallel dev",
+    "build": "vp run -r build",
+    "check": "vp run -r check",
+    "test": "vp run -r test",
+    "db:migrate": "vp run @memehub/api#migrate",
+    "db:up": "docker compose -p memehub up -d --wait db",
+    "db:down": "docker compose -p memehub down"
+  },
+  "devDependencies": {
+    "vite-plus": "1.4.0"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "packageManager": "pnpm@11.9.0"
+}
