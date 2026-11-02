@@ -168,8 +168,12 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	id := uuid.New()
+	analysisStatus := "queued"
+	if s.cfg.DemoMode {
+		analysisStatus = "not_requested"
+	}
 	_, err = tx.Exec(r.Context(), `INSERT INTO memes(id,created_by,content_type,title,body_text,description,source_url,source_name,source_author,source_note,status,analysis_status)
- VALUES($1,$2,'text',$3,$4,$5,$6,$7,$8,$9,'ready','queued')`, id, sess.UserID, in.Title, in.BodyText, in.Description, nullable(in.SourceURL), nullable(in.SourceName), nullable(in.SourceAuthor), nullable(in.SourceNote))
+ VALUES($1,$2,'text',$3,$4,$5,$6,$7,$8,$9,'ready',$10)`, id, sess.UserID, in.Title, in.BodyText, in.Description, nullable(in.SourceURL), nullable(in.SourceName), nullable(in.SourceAuthor), nullable(in.SourceNote), analysisStatus)
 	if err != nil {
 		internal(w)
 		return
@@ -178,11 +182,13 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 		internal(w)
 		return
 	}
-	_, err = tx.Exec(r.Context(), `INSERT INTO jobs(id,meme_id,type,input_revision,provider,requested_model,prompt_version)
+	if !s.cfg.DemoMode {
+		_, err = tx.Exec(r.Context(), `INSERT INTO jobs(id,meme_id,type,input_revision,provider,requested_model,prompt_version)
  VALUES($1,$2,'analyze_content',0,'openai',COALESCE((SELECT openai_model FROM admin_settings WHERE singleton),$3),'v1')`, uuid.New(), id, s.cfg.OpenAIModel)
-	if err != nil {
-		internal(w)
-		return
+		if err != nil {
+			internal(w)
+			return
+		}
 	}
 	m, err := scanMeme(tx.QueryRow(r.Context(), "SELECT "+memeColumns+" FROM memes m WHERE m.id=$1", id))
 	if err != nil {

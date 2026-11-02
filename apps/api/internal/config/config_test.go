@@ -61,3 +61,28 @@ func TestProductionUsesConfiguredDatabaseTransport(t *testing.T) {
 		})
 	}
 }
+
+func TestDemoConfiguration(t *testing.T) {
+	values := map[string]string{"DEMO_MODE": "true", "OPENAI_API_KEY": "must-not-be-used", "S3_ENDPOINT": "http://localhost:9000"}
+	get := func(key string) string { return values[key] }
+	cfg, err := Parse(get)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.DemoMode || cfg.Env != "development" || cfg.HTTPAddr != "127.0.0.1:8080" || cfg.OpenAIAPIKey != "" || cfg.S3Endpoint != "" || cfg.DatabaseURL == "" {
+		t.Fatalf("unexpected demo configuration: %+v", cfg)
+	}
+	values["APP_BASE_URL"] = "http://localhost:4444"
+	cfg, err = Parse(get)
+	if err != nil || cfg.OIDCRedirectURL != "http://localhost:4444/api/auth/callback" {
+		t.Fatalf("demo origin override failed: %v", err)
+	}
+	values["APP_ENV"] = "production"
+	if _, err := Parse(get); err == nil {
+		t.Fatal("production accepted demo mode")
+	}
+	values["DEMO_MODE"] = "invalid"
+	if _, err := Parse(get); err == nil {
+		t.Fatal("invalid demo flag accepted")
+	}
+}

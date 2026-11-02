@@ -40,6 +40,10 @@ func (s *Server) cookie(w http.ResponseWriter, name, value, path string, ttl tim
 	http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: path, HttpOnly: httpOnly, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: int(ttl.Seconds()), Expires: time.Now().Add(ttl)})
 }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.DemoMode {
+		s.demoLogin(w, r)
+		return
+	}
 	state, nonce, verifier := newToken(), newToken(), oauth2.GenerateVerifier()
 	tx, err := s.db.Begin(r.Context())
 	if err != nil {
@@ -63,6 +67,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, s.oauth.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), http.StatusFound)
 }
 func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.DemoMode {
+		problem(w, http.StatusNotFound, "not_found")
+		return
+	}
 	state, code := r.URL.Query().Get("state"), r.URL.Query().Get("code")
 	cookie, err := r.Cookie(flowCookie)
 	if err != nil || len(state) != 43 || code == "" || subtle.ConstantTimeCompare([]byte(state), []byte(cookie.Value)) != 1 {
