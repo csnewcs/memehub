@@ -3,16 +3,33 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
-import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { ApiContext, createApi } from '../../../shared/api/client';
 import { MemeCard, type Meme } from '../../../entities/meme';
 import type { Collection } from '../../../entities/collection';
 import { SaveToCollection } from './SaveToCollection';
 import { MemeLibrary } from '../../../widgets/meme-library';
+import { desktopHover } from '../../../shared/lib/desktop-hover';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
 let client: QueryClient;
+const nativeMatchMedia = window.matchMedia.bind(window);
+
+function mockDesktop(desktop: boolean) {
+  vi.spyOn(window, 'matchMedia').mockImplementation((query) => {
+    const media = nativeMatchMedia(query);
+    Object.defineProperty(media, 'matches', {
+      value:
+        query === desktopHover
+          ? desktop
+          : query === '(prefers-reduced-motion: reduce)' || media.matches,
+    });
+    return media;
+  });
+}
+
+beforeEach(() => mockDesktop(false));
 
 afterEach(async () => {
   await act(async () => root?.unmount());
@@ -20,6 +37,8 @@ afterEach(async () => {
   document.body.innerHTML = '';
   window.history.replaceState(null, '', '/');
   sessionStorage.clear();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 async function render(element: React.ReactNode, api: ReturnType<typeof createApi>) {
@@ -168,11 +187,72 @@ describe('collection interactions', () => {
       />,
       api,
     );
-    const actions = document.querySelector('article .group')!;
+    const actions = document.querySelector('article')!;
     expect(actions.querySelectorAll('button')).toHaveLength(4);
     await click(actions.querySelector('[aria-label="Add to collection"]'));
     expect(save).toHaveBeenCalledOnce();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('preserves desktop click-to-copy and adds collections to the hold-for-options menu', async () => {
+    mockDesktop(true);
+    const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+    const save = vi.fn();
+    const meme = {
+      id: 'text',
+      content_type: 'text',
+      title: 'Reaction',
+      body_text: 'A saved reaction',
+      tags: [],
+      created_at: '2026-11-02T00:00:00Z',
+    } as unknown as Meme;
+    await render(
+      <MemeCard
+        meme={meme}
+        index={0}
+        onTagSearch={() => {}}
+        onUserSearch={() => {}}
+        onSave={save}
+      />,
+      createApi('/api'),
+    );
+    vi.useFakeTimers();
+    const hover = document.querySelector('.meme-hover')!;
+    await act(async () => {
+      hover.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' }));
+    });
+    expect(hover.getAttribute('data-hovered')).toBe('true');
+    const card = document.querySelector('article button')!;
+    expect(card.getAttribute('aria-label')).toContain('Hold for options');
+    await act(async () => {
+      card.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          button: 0,
+          isPrimary: true,
+          pointerType: 'mouse',
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(500);
+      card.dispatchEvent(
+        new PointerEvent('pointerup', {
+          bubbles: true,
+          button: 0,
+          isPrimary: true,
+          pointerType: 'mouse',
+        }),
+      );
+    });
+    await click(card);
+    expect(copy).not.toHaveBeenCalled();
+    const options = document.querySelector('[role="group"][aria-label="Meme options"]')!;
+    expect(options.querySelectorAll('button')).toHaveLength(4);
+    await click(options.querySelector('[aria-label="Add to collection"]'));
+    expect(save).toHaveBeenCalledOnce();
+    expect(document.querySelector('[aria-label="Meme options"]')).toBeNull();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await click(card);
+    expect(copy).toHaveBeenCalledWith('A saved reaction');
   });
 
   it('creates and saves inside the popup, shows membership, then removes the meme', async () => {

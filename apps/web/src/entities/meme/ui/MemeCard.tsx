@@ -2,24 +2,18 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { metadata, siteTitle } from '../model/metadata';
 import type { Meme } from '../model/types';
 import { useMemeMedia } from '../api/queries';
-import { Dialog, DialogTitle, DialogTrigger } from '../../../shared/ui/dialog';
+import { Dialog, DialogTitle } from '../../../shared/ui/dialog';
 import {
   DialogPanel,
   DialogBody,
   DialogPanelHeader,
   DialogPanelFooter,
 } from '../../../shared/ui/dialog-layout';
-import { Button } from '../../../shared/ui/button';
-import {
-  CopyIcon,
-  DetailsIcon,
-  CheckIcon,
-  LoadingIcon,
-  BookmarkIcon,
-} from '../../../shared/ui/icons';
-import { copyImage } from '../../../shared/lib/copy-image';
 import { MemeShare } from './MemeShare';
+import { MemeCardInteraction } from './MemeCardInteraction';
+import { MemeSave } from './MemeSave';
 import { Skeleton } from '../../../shared/ui/skeleton';
+import { HoverPreview } from '../../../shared/ui/hover-preview';
 
 function ImagePreview({ meme, full = false }: { meme: Meme; full?: boolean }) {
   const media = useMemeMedia(meme.id);
@@ -58,6 +52,7 @@ function ImagePreview({ meme, full = false }: { meme: Meme; full?: boolean }) {
           width={meme.width ?? undefined}
           height={meme.height ?? undefined}
           onLoad={() => setLoadedSrc(src)}
+          draggable={false}
           className={`${full ? 'mx-auto max-h-full max-w-full object-contain' : 'h-auto max-h-[70dvh] w-full object-contain'} ${loaded ? 'opacity-100' : 'opacity-0'}`}
           onError={() => setFailedSrc(src)}
         />
@@ -101,6 +96,8 @@ export function MemeCard({
 }) {
   const [open, setOpen] = useState(detailOnly);
   const [busy, setBusy] = useState(false);
+  const [actionsTarget, setActionsTarget] = useState<HTMLDivElement | null>(null);
+  const [hovered, setHovered] = useState(false);
   useEffect(() => {
     if (!open) return;
     const previous = document.title;
@@ -209,29 +206,30 @@ export function MemeCard({
   return (
     <Dialog open={open} onOpenChange={changeOpen}>
       {!detailOnly && (
-        <article
-          className="meme-card min-w-0 overflow-hidden"
-          style={{ animationDelay: `${Math.min(index, 8) * 25}ms` }}
-        >
-          {meme.content_type === 'image' ? (
-            <div className="group relative">
-              <ImagePreview meme={meme} />
-              <ImageActions meme={meme} onSave={onSave} />
-            </div>
-          ) : (
-            <DialogTrigger asChild>
-              <button
-                type="button"
-                className="block w-full cursor-pointer text-left outline-none"
-                aria-label={`View details: ${meme.title || 'Text'}`}
-              >
-                <p className="line-clamp-6 whitespace-pre-wrap break-words text-sm leading-snug">
-                  {meme.body_text}
-                </p>
-              </button>
-            </DialogTrigger>
-          )}
-        </article>
+        <HoverPreview disabled={open} actionsRef={setActionsTarget} onHoverChange={setHovered}>
+          <article
+            className="meme-card min-w-0"
+            style={{ animationDelay: `${Math.min(index, 8) * 25}ms` }}
+          >
+            <MemeCardInteraction
+              meme={meme}
+              onDetails={() => changeOpen(true)}
+              onSave={onSave}
+              optionsTarget={actionsTarget}
+              hovered={hovered}
+            >
+              <div className="meme-visual pointer-events-none bg-background">
+                {meme.content_type === 'image' ? (
+                  <ImagePreview meme={meme} />
+                ) : (
+                  <p className="line-clamp-6 whitespace-pre-wrap break-words text-sm leading-snug">
+                    {meme.body_text}
+                  </p>
+                )}
+              </div>
+            </MemeCardInteraction>
+          </article>
+        </HoverPreview>
       )}
       <DialogPanel
         size={meme.content_type === 'image' ? 'wide' : 'default'}
@@ -255,7 +253,7 @@ export function MemeCard({
               actions: (
                 <>
                   <MemeShare meme={meme} />
-                  <SaveButton onSave={onSave} />
+                  <MemeSave onSave={onSave} />
                 </>
               ),
               onDeleted: () => changeOpen(false),
@@ -266,91 +264,12 @@ export function MemeCard({
               {content}
               <DialogPanelFooter>
                 <MemeShare meme={meme} />
-                <SaveButton onSave={onSave} />
+                <MemeSave onSave={onSave} />
               </DialogPanelFooter>
             </div>
           )}
         </div>
       </DialogPanel>
     </Dialog>
-  );
-}
-
-function SaveButton({ onSave }: { onSave: () => void }) {
-  return (
-    <Button
-      type="button"
-      variant="secondary"
-      size="icon-sm"
-      aria-label="Add to collection"
-      title="Add to collection"
-      onClick={onSave}
-    >
-      <BookmarkIcon aria-hidden="true" />
-    </Button>
-  );
-}
-
-function ImageActions({ meme, onSave }: { meme: Meme; onSave: () => void }) {
-  const media = useMemeMedia(meme.id);
-  const [state, setState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle');
-  useEffect(() => {
-    if (state !== 'copied' && state !== 'failed') return;
-    const timer = window.setTimeout(() => setState('idle'), 2500);
-    return () => window.clearTimeout(timer);
-  }, [state]);
-  async function copy() {
-    setState('copying');
-    try {
-      await copyImage(async () => {
-        const data = media.data ?? (await media.refetch()).data;
-        if (!data) throw new Error('Image unavailable');
-        return data.original.url;
-      });
-      setState('copied');
-    } catch {
-      setState('failed');
-    }
-  }
-  return (
-    <div
-      className={`absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-end gap-1 bg-gradient-to-t from-black/80 to-transparent p-1.5 pt-6 transition-opacity [&>button]:size-6 group-hover:opacity-100 group-focus-within:opacity-100 group-has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100 ${state === 'idle' ? 'opacity-0' : 'opacity-100'}`}
-    >
-      <Button
-        type="button"
-        variant="secondary"
-        size="icon-sm"
-        aria-label={state === 'copied' ? 'Image copied' : 'Copy image'}
-        title="Copy image (animated images copy as still images)"
-        disabled={state === 'copying'}
-        onClick={() => void copy()}
-      >
-        {state === 'copying' ? (
-          <LoadingIcon className="animate-spin" aria-hidden="true" />
-        ) : state === 'copied' ? (
-          <CheckIcon aria-hidden="true" />
-        ) : (
-          <CopyIcon aria-hidden="true" />
-        )}
-      </Button>
-      <DialogTrigger asChild>
-        <Button
-          type="button"
-          variant="secondary"
-          size="icon-sm"
-          aria-label={`View details: ${meme.title || 'Image'}`}
-          title="View details"
-        >
-          <DetailsIcon aria-hidden="true" />
-        </Button>
-      </DialogTrigger>
-      <MemeShare meme={meme} />
-      <SaveButton onSave={onSave} />
-      {state === 'failed' && (
-        <span role="alert" className="w-full text-right text-xs text-white">
-          Could not copy. Try again.
-        </span>
-      )}
-    </div>
   );
 }
