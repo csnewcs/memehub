@@ -13,6 +13,7 @@ import (
 )
 
 type Store struct {
+	local  *localStore
 	client *s3.Client
 	signer *s3.PresignClient
 	bucket string
@@ -39,6 +40,9 @@ func New(c config.Config) *Store {
 	return &Store{client: client, signer: s3.NewPresignClient(public), bucket: c.S3Bucket, ttl: c.S3TTL}
 }
 func (s *Store) UploadURL(ctx context.Context, key, mime string, size int64) (Upload, error) {
+	if s.local != nil {
+		return s.local.uploadURL(key, mime, size)
+	}
 	out, err := s.signer.PresignPutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key), ContentType: aws.String(mime), ContentLength: aws.Int64(size)}, func(o *s3.PresignOptions) { o.Expires = s.ttl })
 	if err != nil {
 		return Upload{}, err
@@ -52,6 +56,9 @@ func (s *Store) UploadURL(ctx context.Context, key, mime string, size int64) (Up
 	return Upload{URL: out.URL, Method: "PUT", Headers: headers, ExpiresAt: time.Now().Add(s.ttl)}, nil
 }
 func (s *Store) Read(ctx context.Context, key string) (io.ReadCloser, error) {
+	if s.local != nil {
+		return s.local.read(key)
+	}
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
 	if err != nil {
 		return nil, err
@@ -59,14 +66,23 @@ func (s *Store) Read(ctx context.Context, key string) (io.ReadCloser, error) {
 	return out.Body, nil
 }
 func (s *Store) Put(ctx context.Context, key, mime string, data []byte) error {
+	if s.local != nil {
+		return s.local.put(key, data)
+	}
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key), ContentType: aws.String(mime), Body: bytes.NewReader(data)})
 	return err
 }
 func (s *Store) Delete(ctx context.Context, key string) error {
+	if s.local != nil {
+		return s.local.delete(key)
+	}
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
 	return err
 }
 func (s *Store) ReadURL(ctx context.Context, key string) (SignedURL, error) {
+	if s.local != nil {
+		return s.local.signedURL("GET", key, "", 0)
+	}
 	out, err := s.signer.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)}, func(o *s3.PresignOptions) { o.Expires = s.ttl })
 	if err != nil {
 		return SignedURL{}, err

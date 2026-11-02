@@ -28,6 +28,17 @@ type Server struct {
 
 func New(ctx context.Context, cfg config.Config, db *pgxpool.Pool) (*Server, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
+	if cfg.DemoMode {
+		if cfg.Env != "development" && cfg.Env != "test" {
+			return nil, errors.New("demo mode is only allowed in development or test")
+		}
+		store, err := storage.NewLocal(cfg)
+		if err != nil {
+			return nil, errors.New("cannot initialize demo data directory")
+		}
+		slog.Warn("demo mode enabled: shared demo administrator, local file storage, and no external analysis")
+		return &Server{store: store, cfg: cfg, db: db, client: client}, nil
+	}
 	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, client), cfg.OIDCIssuer)
 	if err != nil {
 		return nil, errors.New("OIDC discovery failed")
@@ -37,6 +48,9 @@ func New(ctx context.Context, cfg config.Config, db *pgxpool.Pool) (*Server, err
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	if s.cfg.DemoMode && s.store != nil {
+		mux.Handle("/api/demo/storage/", s.store.LocalHandler())
+	}
 	mux.HandleFunc("GET /api/health/live", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /api/health/ready", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)

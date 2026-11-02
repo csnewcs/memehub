@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
+    "dev:demo": "astro dev",
     "build": "astro build",
     "check": "astro check",
     "test": "vp test run",

@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "vp run -r --parallel dev",
+    "dev:demo": "vp run db:up && vp run @memehub/api#migrate:demo && pnpm --filter @memehub/api --filter @memehub/web --parallel run dev:demo",
     "build": "vp run -r build",
     "check": "vp run -r check",
     "test": "vp run -r test",

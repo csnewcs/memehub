@@ -74,6 +74,10 @@ func (s *Server) retryAnalysis(w http.ResponseWriter, r *http.Request) {
 	if !s.adminSession(w, r, true) {
 		return
 	}
+	if s.cfg.DemoMode {
+		problem(w, http.StatusServiceUnavailable, "analysis_disabled_in_demo")
+		return
+	}
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		problem(w, 400, "invalid_meme_id")

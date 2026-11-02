@@ -263,15 +263,21 @@ func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 			}
 			previewKey = &value
 		}
-		_, err = tx.Exec(r.Context(), `UPDATE memes SET width=$2,height=$3,thumbnail_object_key=$4,preview_object_key=$5,status='ready',analysis_status='queued',updated_at=now() WHERE id=$1`, id, width, height, thumbKey, previewKey)
+		analysisStatus := "queued"
+		if s.cfg.DemoMode {
+			analysisStatus = "not_requested"
+		}
+		_, err = tx.Exec(r.Context(), `UPDATE memes SET width=$2,height=$3,thumbnail_object_key=$4,preview_object_key=$5,status='ready',analysis_status=$6,updated_at=now() WHERE id=$1`, id, width, height, thumbKey, previewKey, analysisStatus)
 		if err != nil {
 			internal(w)
 			return
 		}
-		_, err = tx.Exec(r.Context(), `INSERT INTO jobs(id,meme_id,type,input_revision,provider,requested_model,prompt_version) VALUES($1,$2,'analyze_content',0,'openai',COALESCE((SELECT openai_model FROM admin_settings WHERE singleton),$3),'v1')`, uuid.New(), id, s.cfg.OpenAIModel)
-		if err != nil {
-			internal(w)
-			return
+		if !s.cfg.DemoMode {
+			_, err = tx.Exec(r.Context(), `INSERT INTO jobs(id,meme_id,type,input_revision,provider,requested_model,prompt_version) VALUES($1,$2,'analyze_content',0,'openai',COALESCE((SELECT openai_model FROM admin_settings WHERE singleton),$3),'v1')`, uuid.New(), id, s.cfg.OpenAIModel)
+			if err != nil {
+				internal(w)
+				return
+			}
 		}
 	}
 	m, err := scanMeme(tx.QueryRow(r.Context(), "SELECT "+memeColumns+" FROM memes m WHERE m.id=$1", id))
